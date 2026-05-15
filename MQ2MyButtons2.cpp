@@ -65,10 +65,12 @@ static void MB2Error(const std::string& msg)
 }
 
 // -------------------------------------------------------------------------
-// Pre-parse local tokens
+// Pre-parse local tokens: this is a feature added for eqbc since it does not parse
+//    escape characters for non-tell broadcasts like /bca, bcz, etc. (presumably for 
+//    security reasons)
 //
 // ^{expression} is expanded on this client before the command is dispatched.
-// ${expression} is left intact so /noparse /bcaa can deliver it to receivers.
+// ${expression} is left intact 
 //
 // Example: /noparse /bcaa //if ( ${Raid.MainAssist[1]} == ^{Me.Name} ) /nav id ^{Me.ID}
 // Becomes: /noparse /bcaa //if ( ${Raid.MainAssist[1]} == Tankguy) /nav id 12345
@@ -758,6 +760,12 @@ PLUGIN_API void OnUpdateImGui()
                 DoCommand(pCharSpawn, bcCmd);
             }
             g_editingButton = 0;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear", ImVec2(80, 0))) {
+            g_editLabelBuf[0] = '\0';
+            g_editCmdBuf[0]   = '\0';
+            g_editColor[0] = 1.0f; g_editColor[1] = 1.0f; g_editColor[2] = 1.0f;
         }
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(80, 0))) {
