@@ -108,6 +108,7 @@ static void PreParseLocalTokens(char* buf, size_t bufSize)
     strcpy_s(buf, bufSize, out.c_str());
 }
 
+// 
 // Convert storage format (literal \n) ↔ display format (actual newlines for ImGui multiline)
 static void StorageToDisplay(const char* src, char* dst, size_t dstSize)
 {
