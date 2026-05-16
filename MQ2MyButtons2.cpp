@@ -419,7 +419,6 @@ public:
 
     void SetLabel(int i)
     {
-        if (g_buttons[i].label[0] == '\0') return;
         if (CXWnd* lbl = GetChildItem(("MB2_Label" + std::to_string(i)).c_str())) {
             char buf[MAX_STRING];
             strcpy_s(buf, g_buttons[i].label);
