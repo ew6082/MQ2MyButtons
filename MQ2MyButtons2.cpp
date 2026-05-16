@@ -705,7 +705,7 @@ PLUGIN_API void OnUpdateImGui()
 {
     if (g_editingButton <= 0) return;
 
-    ImGui::SetNextWindowSize(ImVec2(500, 320), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(500, 380), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(400, 200), ImGuiCond_FirstUseEver);
     bool open = true;
     const std::string title = "Edit Button " + std::to_string(g_editingButton) + "##MB2Edit";
@@ -731,6 +731,68 @@ PLUGIN_API void OnUpdateImGui()
                                   ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 8));
 
         ImGui::ColorEdit3("Color", g_editColor);
+
+        // Reorder controls
+        static int s_swapTarget  = 0;
+        static int s_lastEditBtn = 0;
+        if (g_editingButton != s_lastEditBtn) { s_swapTarget = 0; s_lastEditBtn = g_editingButton; }
+        const int cur = g_editingButton;
+
+        const auto writeBtn = [&](int i) {
+            const std::string sec = "Button" + std::to_string(i);
+            WritePrivateProfileString(sec.c_str(), "Label",   g_buttons[i].label,   INIFileName);
+            WritePrivateProfileString(sec.c_str(), "Command", g_buttons[i].command, INIFileName);
+            WritePrivateProfileInt(   sec.c_str(), "Red",     g_buttons[i].r,       INIFileName);
+            WritePrivateProfileInt(   sec.c_str(), "Green",   g_buttons[i].g,       INIFileName);
+            WritePrivateProfileInt(   sec.c_str(), "Blue",    g_buttons[i].b,       INIFileName);
+        };
+        const auto doSwap = [&](int a, int b) {
+            std::swap(g_buttons[a], g_buttons[b]);
+            writeBtn(a); writeBtn(b);
+            if (MyBtn2Wnd) MyBtn2Wnd->SetButtonInfo();
+            if (g_broadcastEnabled) {
+                char bcCmd[MAX_STRING];
+                if (g_broadcastMethod == 0) sprintf_s(bcCmd, "/dgex /buttons2 reload");
+                else                        sprintf_s(bcCmd, "/bca //buttons2 reload");
+                DoCommand(pCharSpawn, bcCmd);
+            }
+            g_editingButton = 0;
+        };
+
+        ImGui::Spacing();
+        ImGui::BeginDisabled(cur <= 1);
+        if (ImGui::ArrowButton("##moveup", ImGuiDir_Up))     doSwap(cur, cur - 1);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(cur >= g_numButtons);
+        if (ImGui::ArrowButton("##movedown", ImGuiDir_Down)) doSwap(cur, cur + 1);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextDisabled("move");
+        ImGui::SameLine();
+
+        char swapPreview[MAX_STRING];
+        if (s_swapTarget < 1 || s_swapTarget > g_numButtons || s_swapTarget == cur)
+            strcpy_s(swapPreview, "-- swap with --");
+        else
+            sprintf_s(swapPreview, "[%d] %s", s_swapTarget,
+                      g_buttons[s_swapTarget].label[0] ? g_buttons[s_swapTarget].label : "(empty)");
+
+        ImGui::SetNextItemWidth(200);
+        if (ImGui::BeginCombo("##swaptgt", swapPreview)) {
+            for (int j = 1; j <= g_numButtons; j++) {
+                if (j == cur) continue;
+                char item[MAX_STRING];
+                sprintf_s(item, "[%d] %s", j, g_buttons[j].label[0] ? g_buttons[j].label : "(empty)");
+                if (ImGui::Selectable(item, s_swapTarget == j)) s_swapTarget = j;
+                if (s_swapTarget == j) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(s_swapTarget < 1 || s_swapTarget > g_numButtons || s_swapTarget == cur);
+        if (ImGui::Button("Swap##swapbtn")) doSwap(cur, s_swapTarget);
+        ImGui::EndDisabled();
 
         ImGui::Separator();
         if (ImGui::Button("Save", ImVec2(80, 0))) {
