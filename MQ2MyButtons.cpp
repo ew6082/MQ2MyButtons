@@ -1,1942 +1,888 @@
-// MQ2MyButtons.cpp : Defines the entry point for the DLL application.
-//
-// From Knightly:  I don't know who originally wrote this, I stole the source
-// and updated it to fix it.  But this is definitely not my code.  So, don't you
-// judge me. (This used to be a link to a My Name is Earl segment where the actors
-// say that a bunch, but they took it down so you'll just have to watch the show.)
+// MQ2MyButtons.cpp
+// Original by unknown, updated by Knightly, condensed/extended by Nerp, vastly assisted by Claude
+//  
 
 #include <mq/Plugin.h>
+#include <mq/imgui/ImGuiUtils.h>
 
+#include <array>
+#include <filesystem>
 #include <fstream>
+#include <sstream>
+#include <string>
 
 PreSetup("MQ2MyButtons");
-PLUGIN_VERSION(2020.0604);
+PLUGIN_VERSION(2026.515);
 
 PLUGIN_API void MyButtonsCommand(SPAWNINFO* pSpawn, char* szLine);
 
-namespace KnightlyMyButtons {
-	bool boolDebug = false;
-	int iMaxButtons = 12;
-	const std::string xmlVersion = "2020-05-23";
-	// All of this should be converted into one object, but by the time I realized that it was already written.
-	// And, sure arrays start at zero, but when you're talking about "Button 1" that gets confusing, so one extra won't hurt.
-	char arrMyCommands[13][MAX_STRING] = { 0 };
-	char arrMyLabels[13][MAX_STRING] = { 0 };
-	char arrMyColors[13][3][MAX_STRING] = { 0 };
+constexpr int MAX_BUTTONS  = 60;
+constexpr int XML_SCHEMA   = 3; // bump when XML generation logic changes to invalidate cached files
+static const char* XML_FILE = "MQUI_MyButtonsWnd.xml";
 
-	// Log Functions we'll be using
-	class Log {
-		public:
-			// Message is for logging a standard message.
-			// All other logging calls go through this base.
-			static void Message(std::string strMessage) {
-				strMessage = "\ay[\agMQ2MyButtons\ay]\aw ::: \ao" + strMessage;
-				WriteChatf(strMessage.c_str());
-			}
-
-			// Error is for logging errors
-			static void Error(std::string strError) {
-				strError = "\arERROR: " + strError;
-				Message(strError);
-			}
-
-			// Debug is for logging debug messages and only
-			// works if boolDebug is TRUE.
-			static void Debug(std::string strDebug) {
-				strDebug = "\amDEBUG: " + strDebug;
-				if (boolDebug) {
-					Message(strDebug);
-				}
-			}
-
-			static void ShowHelp() {
-				Message("\ay============== MyButtons Help ==============");
-				Message("\aoTo change buttons, edit MQ2MyButtons.ini in your MQ2 directory");
-				Message(" ");
-				Message("\ayAvailable TLOs:");
-				Message("\ay      \at${MyButtons.label[\am<Button>\at]}\ay -- String - The Name assigned to <Button>");
-				Message("\ay      \at${MyButtons.cmd[\am<Button>\at]}\ay -- String - The Command assigned to <Button>");
-				Message("\ayExample:");
-				Message("\ay      \ao/echo ${MyButtons.label[1]}");
-				Message("\ayThe above would return the label of Button 1.");
-				Message(" ");
-				Message("\ayUsage:");
-				Message("\ay      Toggle the window on/off:");
-				Message("\ay           \at/mybuttons");
-				Message("\ay           \at/mybuttons on");
-				Message("\ay           \at/mybuttons off");
-				Message("\ay      Reload hotkeys from ini:");
-				Message("\ay           \at/mybuttons reload");
-				Message("\ay      Show buttons configuration:");
-				Message("\ay           \at/mybuttons show");
-				Message("\ay      Use a button:");
-				Message("\ay           \at/mybuttons \am<ButtonNumber>");
-				Message("\ayExample:");
-				Message("\ay        \ao/mybuttons 1");
-				Message("\ayThe above would be the same as clicking Button 1.");
-			}
-
-			static void ShowButtons() {
-				Message("\ay========== Current Button Commands ==========");
-				for (int i = 1; i <= iMaxButtons; i++) {
-					if (!(arrMyCommands[i][0] == 0)) {
-						std::string strBuffer;
-						Message("----------------------");
-						Message("Button: \am" + std::to_string(i));
-						strBuffer = arrMyLabels[i];
-						Message("Label: \at" + strBuffer);
-						strBuffer = arrMyCommands[i];
-						Message("Command: \at" + strBuffer);
-					}
-				}
-			}
-	};
-
-	class File {
-		public:
-			// Function to check for and create XML file.  By default it doesn't create the file
-			// if it already exists in the right version.  This can be overridden if needed.
-			static bool CheckAndCreateXMLFile(std::string_view strFileName, bool createFile = false) {
-				// Assume something went wrong~
-				bool returnResult = false;
-				std::filesystem::path pathXMLFile = gPathResources / std::filesystem::path("uifiles\\default\\") / strFileName;
-				std::error_code ec_fs;
-				// Check if the file already exists
-				if (!std::filesystem::exists(pathXMLFile, ec_fs)) {
-					// File doesn't exist
-					createFile = true;
-				}
-				else {
-					std::ifstream readPath(pathXMLFile);
-					std::string versionLine;
-					// Read the first line
-					getline(readPath, versionLine);
-					// Check if this is the current version
-					if (versionLine == "<!-- MyButtons UI File Version:  " + xmlVersion + " -->") {
-						returnResult = true;
-					}
-					// Otherwise replace it
-					else {
-						createFile = true;
-					}
-					// Close any open reads we have
-					readPath.close();
-
-				}
-
-				// If we should create the file
-				if (createFile) {
-					// If the parent folder exists or can be created
-					if (std::filesystem::exists(pathXMLFile.parent_path(), ec_fs) || std::filesystem::create_directories(pathXMLFile.parent_path(), ec_fs)) {
-						// Open the file for writing
-						std::ofstream writePath(pathXMLFile);
-						// If we have a write handle (ie, we can write to it)...
-						if (writePath) {
-							if (strFileName == "MQUI_MyButtonsWnd.xml") {
-								// TODO: Make this a resource
-								writePath << "<!-- MyButtons UI File Version:  " + xmlVersion + " -->";
-
-								writePath << R"KnightlyXMLRtrn(
-	<?xml version="1.0" encoding="us-ascii"?>
-	<XML ID="EQInterfaceDefinitionLanguage">
-		<Schema xmlns="EverQuestData" xmlns:dt="EverQuestDataTypes" />
-		<Ui2DAnimation item="AMQMB_Button1Normal">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>0</X>
-					<Y>0</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button1Pressed">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>80</X>
-					<Y>0</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button1Flyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>40</X>
-					<Y>0</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button1PressedFlyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>120</X>
-					<Y>0</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button1Disabled">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>160</X>
-					<Y>0</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button2Normal">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>0</X>
-					<Y>40</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button2Pressed">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>80</X>
-					<Y>40</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button2Flyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>40</X>
-					<Y>40</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button2PressedFlyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>120</X>
-					<Y>40</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button2Disabled">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>160</X>
-					<Y>40</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button3Normal">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>0</X>
-					<Y>80</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button3Pressed">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>80</X>
-					<Y>80</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button3Flyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>40</X>
-					<Y>80</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button3PressedFlyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>120</X>
-					<Y>80</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button3Disabled">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>160</X>
-					<Y>80</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button4Normal">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>0</X>
-					<Y>120</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button4Pressed">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>80</X>
-					<Y>120</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button4Flyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>40</X>
-					<Y>120</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button4PressedFlyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>120</X>
-					<Y>120</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button4Disabled">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>160</X>
-					<Y>120</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button5Normal">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>0</X>
-					<Y>160</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button5Pressed">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>80</X>
-					<Y>160</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button5Flyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>40</X>
-					<Y>160</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button5PressedFlyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>120</X>
-					<Y>160</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button5Disabled">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>160</X>
-					<Y>160</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button6Normal">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>0</X>
-					<Y>200</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button6Pressed">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>80</X>
-					<Y>200</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button6Flyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>40</X>
-					<Y>200</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button6PressedFlyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>120</X>
-					<Y>200</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-	<!-- C++ String Limit Break -->)KnightlyXMLRtrn";
-
-								writePath << R"KnightlyXMLRtrn(
-		<Ui2DAnimation item="AMQMB_Button6Disabled">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces06.tga</Texture>
-				<Location>
-					<X>160</X>
-					<Y>200</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button7Normal">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>0</X>
-					<Y>0</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button7Pressed">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>80</X>
-					<Y>0</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button7Flyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>40</X>
-					<Y>0</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button7PressedFlyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>120</X>
-					<Y>0</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button7Disabled">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>160</X>
-					<Y>0</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button8Normal">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>0</X>
-					<Y>40</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button8Pressed">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>80</X>
-					<Y>40</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button8Flyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>40</X>
-					<Y>40</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button8PressedFlyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>120</X>
-					<Y>40</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button8Disabled">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>160</X>
-					<Y>40</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button9Normal">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>0</X>
-					<Y>80</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button9Pressed">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>80</X>
-					<Y>80</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button9Flyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>40</X>
-					<Y>80</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button9PressedFlyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>120</X>
-					<Y>80</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button9Disabled">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>160</X>
-					<Y>80</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button10Normal">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>0</X>
-					<Y>120</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button10Pressed">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>80</X>
-					<Y>120</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button10Flyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>40</X>
-					<Y>120</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button10PressedFlyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>120</X>
-					<Y>120</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button10Disabled">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>160</X>
-					<Y>120</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button11Normal">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>0</X>
-					<Y>160</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button11Pressed">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>80</X>
-					<Y>160</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button11Flyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>40</X>
-					<Y>160</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button11PressedFlyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>120</X>
-					<Y>160</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button11Disabled">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>160</X>
-					<Y>160</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button12Normal">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>0</X>
-					<Y>200</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button12Pressed">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>80</X>
-					<Y>200</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button12Flyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>40</X>
-					<Y>200</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-	<!-- C++ String Limit Break -->)KnightlyXMLRtrn";
-
-								writePath << R"KnightlyXMLRtrn(
-		<Ui2DAnimation item="AMQMB_Button12PressedFlyby">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>120</X>
-					<Y>160</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-		<Ui2DAnimation item="AMQMB_Button12Disabled">
-			<Cycle>true</Cycle>
-			<Frames>
-				<Texture>window_pieces07.tga</Texture>
-				<Location>
-					<X>160</X>
-					<Y>160</Y>
-				</Location>
-				<Size>
-					<CX>40</CX>
-					<CY>40</CY>
-				</Size>
-				<Hotspot>
-					<X>0</X>
-					<Y>0</Y>
-				</Hotspot>
-				<Duration>1000</Duration>
-			</Frames>
-		</Ui2DAnimation>
-	<!-- Break for Button Inserts -->)KnightlyXMLRtrn";
-								for (int j = 1; j <= iMaxButtons; j++) {
-									writePath << std::endl << "\t<Button item=\"MQMB_Button" + std::to_string(j) + "\">" << std::endl;
-									writePath << "\t\t<ScreenID>MQMB_Button" + std::to_string(j) + "</ScreenID>";
-									writePath << R"KnightlyXMLRtrn(
-			<Font>1</Font>
-			<RelativePosition>true</RelativePosition>
-			<Size>
-				<CX>37</CX>
-				<CY>34</CY>
-			</Size>
-			<Text></Text>
-			<DecalOffset>
-				<X>2</X>
-				<Y>2</Y>
-			</DecalOffset>
-			<DecalSize>
-				<CX>33</CX>
-				<CY>30</CY>
-			</DecalSize>
-			<ButtonDrawTemplate>)KnightlyXMLRtrn";
-									writePath << std::endl << "\t\t\t<Normal>AMQMB_Button" + std::to_string(j) + "Normal</Normal>";
-									writePath << std::endl << "\t\t\t<Pressed>AMQMB_Button" + std::to_string(j) + "Pressed</Pressed>";
-									writePath << std::endl << "\t\t\t<Flyby>AMQMB_Button" + std::to_string(j) + "Flyby</Flyby>";
-									writePath << std::endl << "\t\t\t<Disabled>AMQMB_Button" + std::to_string(j) + "Disabled</Disabled>";
-									writePath << std::endl << "\t\t\t<PressedFlyby>AMQMB_Button" + std::to_string(j) + "PressedFlyby</PressedFlyby>" << std::endl;
-									writePath << "\t\t</ButtonDrawTemplate>" << std::endl;
-									writePath << "\t</Button>" << std::endl;
-									writePath << "\t<Label item=\"MQMB_Label" + std::to_string(j) + "\">" << std::endl;
-									writePath << "\t\t<ScreenID>MQMB_Label" + std::to_string(j) + "</ScreenID>" << std::endl;
-									//writePath << "\t\t<EQType>9999</EQType>" << std::endl;
-									writePath << "\t\t<TooltipReference>${MyButtons.Label[" + std::to_string(j) + "]}</TooltipReference>";
-									writePath << R"KnightlyXMLRtrn(
-			<RelativePosition>true</RelativePosition>
-			<Location>
-				<X>0</X>
-				<Y>5</Y>
-			</Location>
-			<Size>
-				<CX>37</CX>
-				<CY>34</CY>
-			</Size>
-			<Text></Text>
-			<Font>1</Font>
-			<TextColor>
-	<!-- Break for Color Inserts -->)KnightlyXMLRtrn";
-									writePath << std::endl << "\t\t\t<R>" << KnightlyMyButtons::arrMyColors[j][0] << "</R>" << std::endl;
-									writePath << "\t\t\t<G>" << KnightlyMyButtons::arrMyColors[j][1] << "</G>" << std::endl;
-									writePath << "\t\t\t<B>" << KnightlyMyButtons::arrMyColors[j][2] << "</B>";
-									writePath << R"KnightlyXMLRtrn(
-	<!-- End Break for Color Inserts -->
-			</TextColor>
-			<NoWrap>false</NoWrap>
-			<AlignCenter>true</AlignCenter>
-			<AlignRight>false</AlignRight>
-			<Style_Transparent>true</Style_Transparent>
-			<Style_TransparentControl>true</Style_TransparentControl>
-		</Label>)KnightlyXMLRtrn";
-									writePath << std::endl << "\t<LayoutBox item=\"MQMB_LayoutB" + std::to_string(j) + "\">" << std::endl;
-									writePath << "\t\t<ScreenID>MQMB_LayoutB" + std::to_string(j) + "</ScreenID>";
-									writePath << R"KnightlyXMLRtrn(
-			<RelativePosition>true</RelativePosition>
-			<Size>
-				<CX>37</CX>
-				<CY>34</CY>
-			</Size>
-			<Style_Transparent>true</Style_Transparent>
-			<Style_TransparentControl>true</Style_TransparentControl>)KnightlyXMLRtrn";
-									writePath << std::endl << "\t\t<Pieces>MQMB_Button" + std::to_string(j) + "</Pieces>" << std::endl;
-									writePath << "\t\t<Pieces>MQMB_Label" + std::to_string(j) + "</Pieces>" << std::endl;
-									writePath << "\t</LayoutBox>";
-								}
-
-								writePath << R"KnightlyXMLRtrn(
-	<!-- Break for Button Inserts End -->
-		<Screen item="MQMB_NoSpinnerBarTemplate">
-			<ScreenID>MQMB_NoSpinnerBarTemplate</ScreenID>
-			<RelativePosition>true</RelativePosition>
-			<AutoStretch>true</AutoStretch>
-			<TopAnchorOffset>4</TopAnchorOffset>
-			<BottomAnchorOffset>4</BottomAnchorOffset>
-			<LeftAnchorOffset>4</LeftAnchorOffset>
-			<RightAnchorOffset>4</RightAnchorOffset>
-			<TopAnchorToTop>true</TopAnchorToTop>
-			<BottomAnchorToTop>false</BottomAnchorToTop>
-			<LeftAnchorToLeft>true</LeftAnchorToLeft>
-			<RightAnchorToLeft>false</RightAnchorToLeft>
-			<UseInLayoutVertical>false</UseInLayoutVertical>
-			<UseInLayoutHorizontal>false</UseInLayoutHorizontal>
-		</Screen>
-		<Screen item="MQMB_HorizontalBarTemplate">
-			<ScreenID>MQMB_HorizontalBarTemplate</ScreenID>
-			<RelativePosition>true</RelativePosition>
-			<AutoStretch>true</AutoStretch>
-			<TopAnchorOffset>4</TopAnchorOffset>
-			<BottomAnchorOffset>4</BottomAnchorOffset>
-			<LeftAnchorOffset>4</LeftAnchorOffset>
-			<RightAnchorOffset>15</RightAnchorOffset>
-			<TopAnchorToTop>true</TopAnchorToTop>
-			<BottomAnchorToTop>false</BottomAnchorToTop>
-			<LeftAnchorToLeft>true</LeftAnchorToLeft>
-			<RightAnchorToLeft>false</RightAnchorToLeft>
-			<UseInLayoutVertical>false</UseInLayoutVertical>
-			<UseInLayoutHorizontal>false</UseInLayoutHorizontal>
-		</Screen>
-		<Screen item="MQMB_VerticalBarTemplate">
-			<ScreenID>MQMB_VerticalBarTemplate</ScreenID>
-			<RelativePosition>true</RelativePosition>
-			<AutoStretch>true</AutoStretch>
-			<TopAnchorOffset>15</TopAnchorOffset>
-			<BottomAnchorOffset>4</BottomAnchorOffset>
-			<LeftAnchorOffset>4</LeftAnchorOffset>
-			<RightAnchorOffset>4</RightAnchorOffset>
-			<TopAnchorToTop>true</TopAnchorToTop>
-			<BottomAnchorToTop>false</BottomAnchorToTop>
-			<LeftAnchorToLeft>true</LeftAnchorToLeft>
-			<RightAnchorToLeft>false</RightAnchorToLeft>
-			<UseInLayoutVertical>false</UseInLayoutVertical>
-			<UseInLayoutHorizontal>false</UseInLayoutHorizontal>
-		</Screen>
-		<TileLayoutBox item="MQMB_ButtonLayout">
-			<ScreenID>MQMB_ButtonLayout</ScreenID>
-			<RelativePosition>true</RelativePosition>
-			<AutoStretch>true</AutoStretch>
-			<TopAnchorOffset>4</TopAnchorOffset>
-			<BottomAnchorOffset>4</BottomAnchorOffset>
-			<LeftAnchorOffset>4</LeftAnchorOffset>
-			<RightAnchorOffset>11</RightAnchorOffset>
-			<TopAnchorToTop>true</TopAnchorToTop>
-			<BottomAnchorToTop>false</BottomAnchorToTop>
-			<LeftAnchorToLeft>true</LeftAnchorToLeft>
-			<RightAnchorToLeft>false</RightAnchorToLeft>
-			<Style_Transparent>true</Style_Transparent>
-			<Style_TransparentControl>true</Style_TransparentControl>
-			<Spacing>4</Spacing>
-			<SecondarySpacing>4</SecondarySpacing>
-			<HorizontalFirst>true</HorizontalFirst>
-			<AnchorToTop>true</AnchorToTop>
-			<AnchorToLeft>true</AnchorToLeft>
-			<FirstPieceTemplate>true</FirstPieceTemplate>
-			<SnapToChildren>true</SnapToChildren>
-			<Pieces>LayoutBox:MQMB_LayoutB1</Pieces>
-			<Pieces>LayoutBox:MQMB_LayoutB2</Pieces>
-			<Pieces>LayoutBox:MQMB_LayoutB3</Pieces>
-			<Pieces>LayoutBox:MQMB_LayoutB4</Pieces>
-			<Pieces>LayoutBox:MQMB_LayoutB5</Pieces>
-			<Pieces>LayoutBox:MQMB_LayoutB6</Pieces>
-			<Pieces>LayoutBox:MQMB_LayoutB7</Pieces>
-			<Pieces>LayoutBox:MQMB_LayoutB8</Pieces>
-			<Pieces>LayoutBox:MQMB_LayoutB9</Pieces>
-			<Pieces>LayoutBox:MQMB_LayoutB10</Pieces>
-			<Pieces>LayoutBox:MQMB_LayoutB11</Pieces>
-			<Pieces>LayoutBox:MQMB_LayoutB12</Pieces>
-		</TileLayoutBox>
-		<Button item="MQMB_PageUpButton">
-			<ScreenID>MQMB_PageUpButton</ScreenID>
-			<RelativePosition>true</RelativePosition>
-			<Size>
-				<CX>11</CX>
-				<CY>16</CY>
-			</Size>
-			<Template>BDT_VSBUp</Template>
-		</Button>
-		<Label item="MQMB_HorizontalCurrentPageLabel">
-			<ScreenID>MQMB_HorizontalCurrentPageLabel</ScreenID>
-			<Font>1</Font>
-			<RelativePosition>true</RelativePosition>
-			<Location>
-				<X>0</X>
-				<Y>16</Y>
-			</Location>
-			<Size>
-				<CX>10</CX>
-				<CY>11</CY>
-			</Size>
-			<Text>10</Text>
-			<AlignCenter>true</AlignCenter>
-		</Label>
-		<Button item="MQMB_PageDownButton">
-			<ScreenID>MQMB_PageDownButton</ScreenID>
-			<RelativePosition>true</RelativePosition>
-			<Location>
-				<X>0</X>
-				<Y>27</Y>
-			</Location>
-			<Size>
-				<CX>11</CX>
-				<CY>16</CY>
-			</Size>
-			<Template>BDT_VSBDown</Template>
-		</Button>
-		<Button item="MQMB_PageLeftButton">
-			<ScreenID>MQMB_PageLeftButton</ScreenID>
-			<RelativePosition>true</RelativePosition>
-			<Size>
-				<CX>16</CX>
-				<CY>11</CY>
-			</Size>
-			<Template>BDT_HSBLeft</Template>
-		</Button>
-		<Label item="MQMB_VerticalCurrentPageLabel">
-			<ScreenID>MQMB_VerticalCurrentPageLabel</ScreenID>
-			<Font>1</Font>
-			<RelativePosition>true</RelativePosition>
-			<Location>
-				<X>16</X>
-				<Y>0</Y>
-			</Location>
-			<Size>
-				<CX>10</CX>
-				<CY>11</CY>
-			</Size>
-			<Text>10</Text>
-			<AlignCenter>true</AlignCenter>
-		</Label>
-		<Button item="MQMB_PageRightButton">
-			<ScreenID>MQMB_PageRightButton</ScreenID>
-			<RelativePosition>true</RelativePosition>
-			<Location>
-				<X>27</X>
-				<Y>0</Y>
-			</Location>
-			<Size>
-				<CX>16</CX>
-				<CY>11</CY>
-			</Size>
-			<Template>BDT_HSBRight</Template>
-		</Button>
-		<Screen item="MQMB_HorizontalBarPageButtons">
-			<ScreenID>MQMB_HorizontalBarPageButtons</ScreenID>
-			<RelativePosition>true</RelativePosition>
-			<AutoStretch>true</AutoStretch>
-			<TopAnchorOffset>0</TopAnchorOffset>
-			<BottomAnchorOffset>43</BottomAnchorOffset>
-			<LeftAnchorOffset>11</LeftAnchorOffset>
-			<RightAnchorOffset>0</RightAnchorOffset>
-			<TopAnchorToTop>true</TopAnchorToTop>
-			<BottomAnchorToTop>true</BottomAnchorToTop>
-			<LeftAnchorToLeft>false</LeftAnchorToLeft>
-			<RightAnchorToLeft>false</RightAnchorToLeft>
-			<Style_Transparent>true</Style_Transparent>
-			<UseInLayoutVertical>false</UseInLayoutVertical>
-			<UseInLayoutHorizontal>false</UseInLayoutHorizontal>
-			<Pieces>MQMB_PageUpButton</Pieces>
-			<Pieces>MQMB_HorizontalCurrentPageLabel</Pieces>
-			<Pieces>MQMB_PageDownButton</Pieces>
-		</Screen>
-		<Screen item="MQMB_VerticalBarPageButtons">
-			<ScreenID>MQMB_VerticalBarPageButtons</ScreenID>
-			<RelativePosition>true</RelativePosition>
-			<Style_Transparent>true</Style_Transparent>
-			<Location>
-				<X>1</X>
-				<Y>0</Y>
-			</Location>
-			<Size>
-				<CX>42</CX>
-				<CY>11</CY>
-			</Size>
-			<UseInLayoutVertical>false</UseInLayoutVertical>
-			<UseInLayoutHorizontal>false</UseInLayoutHorizontal>
-			<Pieces>MQMB_PageLeftButton</Pieces>
-			<Pieces>MQMB_VerticalCurrentPageLabel</Pieces>
-			<Pieces>MQMB_PageRightButton</Pieces>
-		</Screen>
-		<LayoutVertical item="MQMB_LayoutV">
-			<ResizeVertical>true</ResizeVertical>
-			<ResizeHorizontal>true</ResizeHorizontal>
-		</LayoutVertical>
-		<Screen item="MQMBButtonWnd">
-			<ScreenID />
-			<Layout>MQMB_LayoutV</Layout>
-			<Font>2</Font>
-			<RelativePosition>false</RelativePosition>
-			<Location>
-				<X>0</X>
-				<Y>230</Y>
-			</Location>
-			<Size>
-				<CX>525</CX>
-				<CY>53</CY>
-			</Size>
-			<DrawTemplate>WDT_RoundedNoTitle</DrawTemplate>
-			<Style_Qmarkbox>true</Style_Qmarkbox>
-			<Style_Closebox>true</Style_Closebox>
-			<Style_Border>true</Style_Border>
-			<Style_Sizable>true</Style_Sizable>
-			<Style_ClientMovable>true</Style_ClientMovable>
-			<Escapable>false</Escapable>
-			<Pieces>TileLayoutBox:MQMB_ButtonLayout</Pieces>
-		</Screen>
-	</XML>)KnightlyXMLRtrn";
-
-								returnResult = true;
-							}
-							else {
-								returnResult = false;
-							}
-							// Either way, close the file.
-							writePath.close();
-						}
-					}
-				}
-				return returnResult;
-			}
-
-			static bool LoadButtonData() {
-				for (int i = 1; i <= iMaxButtons; i++) {
-					char szButtonSectionTmp[20] = "Button";
-					strcat_s(szButtonSectionTmp, std::to_string(i).c_str());
-					// Get the label into the arrMyLabels array at the position of the button number
-					GetPrivateProfileString(szButtonSectionTmp, "Label", nullptr, arrMyLabels[i], MAX_STRING, INIFileName);
-					// Do the same with the Command
-					GetPrivateProfileString(szButtonSectionTmp, "Command", nullptr, arrMyCommands[i], MAX_STRING, INIFileName);
-					// If there is a command, but no label, set the label to the button number
-					if (!(arrMyCommands[i][0] == 0) && (arrMyLabels[i][0] == 0))
-					{
-						strcpy_s(arrMyLabels[i], std::to_string(i).c_str());
-					}
-					// Get the colors
-					GetPrivateProfileString(szButtonSectionTmp, "Red", "255", arrMyColors[i][0], MAX_STRING, INIFileName);
-					GetPrivateProfileString(szButtonSectionTmp, "Green", "255", arrMyColors[i][1], MAX_STRING, INIFileName);
-					GetPrivateProfileString(szButtonSectionTmp, "Blue", "255", arrMyColors[i][2], MAX_STRING, INIFileName);
-					// If the first button is empty, set it to Help with the color yellow
-					if ((i == 1) && (arrMyCommands[i][0] == 0)) {
-						strcpy_s(arrMyLabels[i], "Help");
-						strcpy_s(arrMyCommands[i], "/mybuttons help");
-						strcpy_s(arrMyColors[i][0], "255");
-						strcpy_s(arrMyColors[i][1], "255");
-						strcpy_s(arrMyColors[i][2], "153");
-					}
-				}
-				return true;
-			}
-	};
-}
-
-class CHButWnd;
-CHButWnd *MyBtnWnd = 0;
-class CHButWnd : public CCustomWnd
-{
-	public:
-		// FIXME:  This needs to be dynamic and initialized
-		CButtonWnd* MyButton[13];
-
-		CHButWnd() : CCustomWnd("MQMBButtonWnd")
-		{
-			for (int i = 1; i <= KnightlyMyButtons::iMaxButtons; ++i) {
-				const std::string strButton = "MQMB_Button" + std::to_string(i);
-				MyButton[i] = (CButtonWnd*)GetChildItem(strButton.c_str());
-			}
-		}
-
-		~CHButWnd()
-		{
-		}
-
-		// FIXME:  This seems inefficient and will only get worse as the amount of buttons increases
-		int WndNotification(CXWnd *pWnd, uint32_t uiMessage, void *pData) override
-		{
-			for (int i = 1; i <= KnightlyMyButtons::iMaxButtons; ++i) {
-				if (pWnd == (CXWnd*)MyButton[i]) {
-					if (uiMessage == XWM_LCLICK) {
-						MyButtonsCommand(pCharSpawn, &std::to_string(i)[0]);
-						break;
-					}
-				}
-			}
-			return 0;
-		}
-
-		void SetLabel(int iButton)
-		{
-			if (MyBtnWnd && KnightlyMyButtons::arrMyLabels[iButton][0] != '\0') {
-				const std::string buttonName = "MQMB_Label" + std::to_string(iButton);
-				if (CXWnd* button = MyBtnWnd->GetChildItem(buttonName.c_str()))
-				{
-					char buffer[MAX_STRING] = { 0 };
-					strcpy_s(buffer, KnightlyMyButtons::arrMyLabels[iButton]);
-					// TODO:  Add a check for the button to see if it NEEDS to be parsed and only parse buttons that need updating
-					ParseMacroData(buffer, MAX_STRING);
-					button->SetWindowText(buffer);
-				}
-			}
-		}
-
-		void SetButtonInfo()
-		{
-			for (int i = 1; i <= KnightlyMyButtons::iMaxButtons; ++i) {
-				const std::string label = "MQMB_Label" + std::to_string(i);
-				if (CXWnd* button = MyBtnWnd->GetChildItem(label.c_str())) {
-					SetLabel(i);
-					ARGBCOLOR buttonColor{};
-					// Alpha matches the window containing the button so that the label fades with the button.
-					buttonColor.A = MyBtnWnd->GetAlpha();
-					buttonColor.R = GetIntFromString(KnightlyMyButtons::arrMyColors[i][0], 255);
-					buttonColor.G = GetIntFromString(KnightlyMyButtons::arrMyColors[i][1], 255);
-					buttonColor.B = GetIntFromString(KnightlyMyButtons::arrMyColors[i][2], 255);
-					button->SetCRNormal(buttonColor.ARGB);
-				}
-				// Tooltip of the button is the command on the button
-				if (MyButton[i] && KnightlyMyButtons::arrMyCommands[i]) MyButton[i]->SetTooltip(KnightlyMyButtons::arrMyCommands[i]);
-			}
-		};
+struct ButtonDef {
+    char label[MAX_STRING]   = {};
+    char command[MAX_STRING] = {};
+    int  r = 255, g = 255, b = 255;
 };
 
-PLUGIN_API void MyButtonsCommand(SPAWNINFO* pSpawn, char* szLine)
+static int g_numButtons   = 30;
+static int g_buttonWidth  = 40;
+static int g_buttonHeight = 18;
+
+// settings the current XML on disk was built with (0 = unknown)
+static int g_xmlNum    = 0;
+static int g_xmlWidth  = 0;
+static int g_xmlHeight = 0;
+
+// button editor state (0 = not editing)
+static int   g_editingButton            = 0;
+static char  g_editLabelBuf[MAX_STRING] = {};
+static char  g_editCmdBuf[MAX_STRING]   = {};
+static float g_editColor[3]             = { 1.0f, 1.0f, 1.0f };
+
+// broadcast settings
+static bool g_broadcastEnabled = false;
+static int  g_broadcastMethod  = 0; // 0 = DanNet (/dgze), 1 = EQBC (/bca)
+
+static std::array<ButtonDef, MAX_BUTTONS + 1> g_buttons; // 1-indexed
+
+class CHButWnd;
+static CHButWnd*        MyBtnWnd       = nullptr;
+class MQ2MyButtonsType* pMyButtonsType = nullptr;
+
+// -------------------------------------------------------------------------
+// Logging
+// -------------------------------------------------------------------------
+static void MBLog(const std::string& msg)
 {
-	CHAR szParam1[MAX_STRING] = { 0 };
-	GetArg(szParam1, szLine, 1, 0);
-	// If the first parameter empty then toggle the window
-	if (strlen(szParam1) == 0) {
-		if (MyBtnWnd) {
-			MyBtnWnd->Show(!MyBtnWnd->IsVisible());
-		}
-	}
-	// Otherwise if the first Parameter is "help" or "?"
-	else if (ci_equals(szParam1, "help") || !strcmp(szParam1, "?")) {
-		KnightlyMyButtons::Log::ShowHelp();
-	}
-	// Otherwise if the first parameter is "on"
-	else if (ci_equals(szParam1, "on")) {
-		if (MyBtnWnd) {
-			MyBtnWnd->Show(true);
-		}
-	}
-	// Otherwise if the first parameter is "off"
-	else if (ci_equals(szParam1, "off")) {
-		if (MyBtnWnd) {
-			MyBtnWnd->Show(false);
-		}
-	}
-	else if (ci_equals(szParam1, "reload")) {
-		KnightlyMyButtons::Log::Message("Reloading hotkeys from INI...");
-		if (KnightlyMyButtons::File::LoadButtonData()) {
-			if (MyBtnWnd) {
-				MyBtnWnd->SetButtonInfo();
-			}
-			KnightlyMyButtons::Log::Message("...Success");
-		}
-		else {
-			KnightlyMyButtons::Log::Error("...Failed");
-		}
-	}
-	// Otherwise if the first parameter is "show"
-	else if (ci_equals(szParam1, "show")) {
-		KnightlyMyButtons::Log::ShowButtons();
-	}
-	else {
-		int i = GetIntFromString(szParam1, 0);
-		// Otherwise if the first parameter is a number between 1 & iMaxButtons
-		if (i > 0 && i <= KnightlyMyButtons::iMaxButtons) {
-			if (KnightlyMyButtons::arrMyCommands[i] != nullptr) {
-				DoCommand(pSpawn, KnightlyMyButtons::arrMyCommands[i]);
-			}
-			else {
-				KnightlyMyButtons::Log::Error("No Command Set for Button: " + std::string(szParam1));
-			}
-		}
-		else {
-			KnightlyMyButtons::Log::Error("Invalid button command: " + std::string(szParam1));
-		}
-	}
+    WriteChatf("\ay[\agMQ2MyButtons\ay]\aw ::: \ao%s", msg.c_str());
 }
 
+static void MBError(const std::string& msg)
+{
+    WriteChatf("\ay[\agMQ2MyButtons\ay]\aw ::: \arERROR: %s", msg.c_str());
+}
 
-class MQ2MyButtonsType *pMyButtonsType = nullptr;
+// -------------------------------------------------------------------------
+// Pre-parse local tokens
+//
+// ^{expression} is expanded on this client before the command is dispatched.
+// ${expression} is left intact so /noparse /bcaa can deliver it to receivers.
+//
+// Example: /noparse /bcaa //if ( ${Raid.MainAssist[1]} == ^{Me.Name} ) /nav id ^{Me.ID}
+// Becomes: /noparse /bcaa //if ( ${Raid.MainAssist[1]} == Tark ) /nav id 12345
+// Each receiver then parses ${Raid.MainAssist[1]} for their own character.
+// -------------------------------------------------------------------------
+static void PreParseLocalTokens(char* buf, size_t bufSize)
+{
+    std::string in(buf), out;
+    out.reserve(in.size());
+    size_t i = 0;
+    while (i < in.size()) {
+        if (i + 1 < in.size() && in[i] == '^' && in[i + 1] == '{') {
+            int depth = 1;
+            size_t j = i + 2;
+            while (j < in.size() && depth > 0) {
+                if      (in[j] == '{') ++depth;
+                else if (in[j] == '}') --depth;
+                ++j;
+            }
+            if (depth == 0) {
+                // Wrap inner expression as ${...} and expand it
+                std::string expr = "${" + in.substr(i + 2, j - i - 3) + "}";
+                char tmp[MAX_STRING];
+                strcpy_s(tmp, expr.c_str());
+                ParseMacroData(tmp, MAX_STRING);
+                out += tmp;
+                i = j;
+            } else {
+                out += in[i++]; // unmatched ^{ — pass through literally
+            }
+        } else {
+            out += in[i++];
+        }
+    }
+    strcpy_s(buf, bufSize, out.c_str());
+}
+
+// Convert storage format (literal \n) ↔ display format (actual newlines for ImGui multiline)
+static void StorageToDisplay(const char* src, char* dst, size_t dstSize)
+{
+    std::string out;
+    for (size_t i = 0; i < strlen(src); ) {
+        if (src[i] == '\\' && src[i + 1] == 'n') { out += '\n'; i += 2; }
+        else                                        { out += src[i++]; }
+    }
+    strcpy_s(dst, dstSize, out.c_str());
+}
+
+static void DisplayToStorage(const char* src, char* dst, size_t dstSize)
+{
+    std::string out;
+    for (const char* p = src; *p; ++p)
+        out += (*p == '\n') ? "\\n" : std::string(1, *p);
+    strcpy_s(dst, dstSize, out.c_str());
+}
+
+// Execute a (possibly multi-line) button command.
+// Lines are separated by the literal two-character sequence \n in storage.
+// Lines starting with # are treated as comments and skipped.
+static void ExecuteButtonCmd(SPAWNINFO* pSpawn, const char* rawCmd)
+{
+    char buf[MAX_STRING];
+    strcpy_s(buf, rawCmd);
+    PreParseLocalTokens(buf, MAX_STRING);
+
+    const auto execLine = [&](std::string line) {
+        const size_t first = line.find_first_not_of(" \t\r");
+        if (first == std::string::npos) return;
+        line = line.substr(first);
+        if (!line.empty() && line[0] != '#')
+            DoCommand(pSpawn, line.c_str());
+    };
+
+    std::string s(buf);
+    size_t start = 0, pos;
+    while ((pos = s.find("\\n", start)) != std::string::npos) {
+        execLine(s.substr(start, pos - start));
+        start = pos + 2;
+    }
+    execLine(s.substr(start));
+}
+
+// -------------------------------------------------------------------------
+// INI helpers
+// -------------------------------------------------------------------------
+static void LoadButtonData()
+{
+    g_numButtons       = std::clamp(GetPrivateProfileInt("Settings", "MaxButtons",      30,    INIFileName), 10, MAX_BUTTONS);
+    g_buttonWidth      = std::clamp(GetPrivateProfileInt("Settings", "ButtonWidth",  40, INIFileName), 1, 400);
+    g_buttonHeight     = std::clamp(GetPrivateProfileInt("Settings", "ButtonHeight", 18, INIFileName), 1, 400);
+    g_broadcastEnabled = GetPrivateProfileBool("Settings", "BroadcastEnabled", true, INIFileName);
+    g_broadcastMethod  = GetPrivateProfileInt( "Settings", "BroadcastMethod",  0,     INIFileName);
+
+    for (int i = 1; i <= MAX_BUTTONS; i++) {
+        const std::string section = "Button" + std::to_string(i);
+        GetPrivateProfileString(section.c_str(), "Label",   "", g_buttons[i].label,   MAX_STRING, INIFileName);
+        GetPrivateProfileString(section.c_str(), "Command", "", g_buttons[i].command, MAX_STRING, INIFileName);
+        g_buttons[i].r = GetPrivateProfileInt(section.c_str(), "Red",   255, INIFileName);
+        g_buttons[i].g = GetPrivateProfileInt(section.c_str(), "Green", 255, INIFileName);
+        g_buttons[i].b = GetPrivateProfileInt(section.c_str(), "Blue",  255, INIFileName);
+    }
+
+    if (g_buttons[1].command[0] == '\0') {
+        strcpy_s(g_buttons[1].label,   "Help");
+        strcpy_s(g_buttons[1].command, "/mybuttons help");
+        g_buttons[1].r = 255; g_buttons[1].g = 255; g_buttons[1].b = 153;
+        WritePrivateProfileString("Button1", "Label",   g_buttons[1].label,   INIFileName);
+        WritePrivateProfileString("Button1", "Command", g_buttons[1].command, INIFileName);
+        WritePrivateProfileInt(   "Button1", "Red",     g_buttons[1].r,       INIFileName);
+        WritePrivateProfileInt(   "Button1", "Green",   g_buttons[1].g,       INIFileName);
+        WritePrivateProfileInt(   "Button1", "Blue",    g_buttons[1].b,       INIFileName);
+    }
+
+    if (g_buttons[2].command[0] == '\0') {
+        strcpy_s(g_buttons[2].label,   "MQP On");
+        strcpy_s(g_buttons[2].command, "/multiline ; /noparse /bcaa //docommand /${Me.Class.ShortName} pause 1 ; /bcaa //mqp on");
+        g_buttons[2].r = 255; g_buttons[2].g = 0; g_buttons[2].b = 0;
+        WritePrivateProfileString("Button2", "Label",   g_buttons[2].label,   INIFileName);
+        WritePrivateProfileString("Button2", "Command", g_buttons[2].command, INIFileName);
+        WritePrivateProfileInt(   "Button2", "Red",     g_buttons[2].r,       INIFileName);
+        WritePrivateProfileInt(   "Button2", "Green",   g_buttons[2].g,       INIFileName);
+        WritePrivateProfileInt(   "Button2", "Blue",    g_buttons[2].b,       INIFileName);
+    }
+
+    if (g_buttons[3].command[0] == '\0') {
+        strcpy_s(g_buttons[3].label,   "MQP Off");
+        strcpy_s(g_buttons[3].command, "/multiline ; /noparse /bcaa //docommand /${Me.Class.ShortName} pause 0 ; /bcaa //mqp off");
+        g_buttons[3].r = 0; g_buttons[3].g = 255; g_buttons[3].b = 0;
+        WritePrivateProfileString("Button3", "Label",   g_buttons[3].label,   INIFileName);
+        WritePrivateProfileString("Button3", "Command", g_buttons[3].command, INIFileName);
+        WritePrivateProfileInt(   "Button3", "Red",     g_buttons[3].r,       INIFileName);
+        WritePrivateProfileInt(   "Button3", "Green",   g_buttons[3].g,       INIFileName);
+        WritePrivateProfileInt(   "Button3", "Blue",    g_buttons[3].b,       INIFileName);
+    }
+}
+
+// -------------------------------------------------------------------------
+// XML generation
+//
+// All buttons share the same sprite area (row 0 of window_pieces06.tga).
+// X offset selects the state: 0=Normal, 40=Flyby, 80=Pressed, 120=PressedFlyby, 160=Disabled.
+// 60 buttons use window_pieces06.tga through window_pieces15.tga.
+// -------------------------------------------------------------------------
+static std::string AnimXML(int btn, const char* state, int xOff)
+{
+    // All buttons reuse row 0 of window_pieces06.tga so we never stray into other UI graphics
+    const char* tex  = "window_pieces06.tga";
+    const int   yOff = 0;
+
+    std::ostringstream o;
+    o << "<Ui2DAnimation item=\"AMQMB_Button" << btn << state << "\">"
+      << "<Cycle>true</Cycle><Frames>"
+      << "<Texture>" << tex << "</Texture>"
+      << "<Location><X>" << xOff << "</X><Y>" << yOff << "</Y></Location>"
+      << "<Size><CX>40</CX><CY>40</CY></Size>"
+      << "<Hotspot><X>0</X><Y>0</Y></Hotspot>"
+      << "<Duration>1000</Duration>"
+      << "</Frames></Ui2DAnimation>\n";
+    return o.str();
+}
+
+static bool GenerateXMLFile()
+{
+    namespace fs = std::filesystem;
+    const fs::path xmlPath = fs::path(gPathResources) / "uifiles\\default\\" / XML_FILE;
+    std::error_code ec;
+    if (!fs::exists(xmlPath.parent_path(), ec))
+        fs::create_directories(xmlPath.parent_path(), ec);
+
+    std::ofstream f(xmlPath);
+    if (!f) return false;
+
+    const int w  = g_buttonWidth;
+    const int h  = g_buttonHeight;
+    const int dW = w - 4;
+    const int dH = h - 4;
+
+    f << "<!-- MQ2MyButtons s=" << XML_SCHEMA << " n=" << g_numButtons << " w=" << w << " h=" << h << " -->\n"
+      << "<?xml version=\"1.0\" encoding=\"us-ascii\"?>\n"
+      << "<XML ID=\"EQInterfaceDefinitionLanguage\">\n"
+      << "<Schema xmlns=\"EverQuestData\" xmlns:dt=\"EverQuestDataTypes\" />\n";
+
+    for (int i = 1; i <= g_numButtons; i++) {
+        f << AnimXML(i, "Normal",        0);
+        f << AnimXML(i, "Pressed",      80);
+        f << AnimXML(i, "Flyby",        40);
+        f << AnimXML(i, "PressedFlyby",120);
+        f << AnimXML(i, "Disabled",    160);
+    }
+
+    for (int i = 1; i <= g_numButtons; i++) {
+        const std::string n = std::to_string(i);
+
+        f << "<Button item=\"MQMB_Button" << n << "\">"
+          << "<ScreenID>MQMB_Button" << n << "</ScreenID>"
+          << "<Font>1</Font><RelativePosition>true</RelativePosition>"
+          << "<Size><CX>" << w << "</CX><CY>" << h << "</CY></Size><Text></Text>"
+          << "<DecalOffset><X>2</X><Y>2</Y></DecalOffset>"
+          << "<DecalSize><CX>" << dW << "</CX><CY>" << dH << "</CY></DecalSize>"
+          << "<ButtonDrawTemplate>"
+          << "<Normal>AMQMB_Button"      << n << "Normal</Normal>"
+          << "<Pressed>AMQMB_Button"     << n << "Pressed</Pressed>"
+          << "<Flyby>AMQMB_Button"       << n << "Flyby</Flyby>"
+          << "<Disabled>AMQMB_Button"    << n << "Disabled</Disabled>"
+          << "<PressedFlyby>AMQMB_Button" << n << "PressedFlyby</PressedFlyby>"
+          << "</ButtonDrawTemplate></Button>\n";
+
+        f << "<Label item=\"MQMB_Label" << n << "\">"
+          << "<ScreenID>MQMB_Label" << n << "</ScreenID>"
+          << "<TooltipReference>${MyButtons.Label[" << n << "]}</TooltipReference>"
+          << "<RelativePosition>true</RelativePosition>"
+          << "<Location><X>0</X><Y>5</Y></Location>"
+          << "<Size><CX>" << w << "</CX><CY>" << h << "</CY></Size>"
+          << "<Text></Text><Font>1</Font>"
+          << "<TextColor>"
+          << "<R>" << g_buttons[i].r << "</R>"
+          << "<G>" << g_buttons[i].g << "</G>"
+          << "<B>" << g_buttons[i].b << "</B>"
+          << "</TextColor>"
+          << "<NoWrap>false</NoWrap><AlignCenter>true</AlignCenter><AlignRight>false</AlignRight>"
+          << "<Style_Transparent>true</Style_Transparent>"
+          << "<Style_TransparentControl>true</Style_TransparentControl>"
+          << "</Label>\n";
+
+        f << "<LayoutBox item=\"MQMB_LayoutB" << n << "\">"
+          << "<ScreenID>MQMB_LayoutB" << n << "</ScreenID>"
+          << "<RelativePosition>true</RelativePosition>"
+          << "<Size><CX>" << w << "</CX><CY>" << h << "</CY></Size>"
+          << "<Style_Transparent>true</Style_Transparent>"
+          << "<Style_TransparentControl>true</Style_TransparentControl>"
+          << "<Pieces>MQMB_Button" << n << "</Pieces>"
+          << "<Pieces>MQMB_Label"  << n << "</Pieces>"
+          << "</LayoutBox>\n";
+    }
+
+    f << "<TileLayoutBox item=\"MQMB_ButtonLayout\">"
+      << "<ScreenID>MQMB_ButtonLayout</ScreenID>"
+      << "<RelativePosition>true</RelativePosition><AutoStretch>true</AutoStretch>"
+      << "<TopAnchorOffset>4</TopAnchorOffset><BottomAnchorOffset>4</BottomAnchorOffset>"
+      << "<LeftAnchorOffset>4</LeftAnchorOffset><RightAnchorOffset>11</RightAnchorOffset>"
+      << "<TopAnchorToTop>true</TopAnchorToTop><BottomAnchorToTop>false</BottomAnchorToTop>"
+      << "<LeftAnchorToLeft>true</LeftAnchorToLeft><RightAnchorToLeft>false</RightAnchorToLeft>"
+      << "<Style_Transparent>true</Style_Transparent>"
+      << "<Style_TransparentControl>true</Style_TransparentControl>"
+      << "<Spacing>4</Spacing><SecondarySpacing>4</SecondarySpacing>"
+      << "<HorizontalFirst>true</HorizontalFirst>"
+      << "<AnchorToTop>true</AnchorToTop><AnchorToLeft>true</AnchorToLeft>"
+      << "<FirstPieceTemplate>true</FirstPieceTemplate><SnapToChildren>true</SnapToChildren>\n";
+    for (int i = 1; i <= g_numButtons; i++)
+        f << "<Pieces>LayoutBox:MQMB_LayoutB" << i << "</Pieces>\n";
+    f << "</TileLayoutBox>\n";
+
+    f << "<LayoutVertical item=\"MQMB_LayoutV\">"
+      << "<ResizeVertical>true</ResizeVertical><ResizeHorizontal>true</ResizeHorizontal>"
+      << "</LayoutVertical>\n";
+
+    f << "<Screen item=\"MQMBButtonWnd\"><ScreenID />"
+      << "<Layout>MQMB_LayoutV</Layout>"
+      << "<Font>2</Font><RelativePosition>false</RelativePosition>"
+      << "<Location><X>0</X><Y>230</Y></Location>"
+      << "<Size><CX>" << (10 * (w + 4) - 4 + 41) << "</CX><CY>53</CY></Size>"
+      << "<DrawTemplate>WDT_RoundedNoTitle</DrawTemplate>"
+      << "<Style_Qmarkbox>true</Style_Qmarkbox>"
+      << "<Style_Closebox>true</Style_Closebox>"
+      << "<Style_Border>true</Style_Border>"
+      << "<Style_Sizable>true</Style_Sizable>"
+      << "<Style_ClientMovable>true</Style_ClientMovable>"
+      << "<Escapable>false</Escapable>"
+      << "<Pieces>TileLayoutBox:MQMB_ButtonLayout</Pieces>"
+      << "</Screen>\n"
+      << "</XML>\n";
+
+    const bool ok = f.good();
+    if (ok) { g_xmlNum = g_numButtons; g_xmlWidth = g_buttonWidth; g_xmlHeight = g_buttonHeight; }
+    return ok;
+}
+
+// Regenerate only when version comment doesn't match current settings
+static bool EnsureXMLFile()
+{
+    namespace fs = std::filesystem;
+    const fs::path xmlPath = fs::path(gPathResources) / "uifiles\\default\\" / XML_FILE;
+    std::error_code ec;
+
+    if (fs::exists(xmlPath, ec)) {
+        std::ifstream f(xmlPath);
+        std::string firstLine;
+        std::getline(f, firstLine);
+        const std::string expected = "<!-- MQ2MyButtons s=" + std::to_string(XML_SCHEMA)
+                                   + " n=" + std::to_string(g_numButtons)
+                                   + " w=" + std::to_string(g_buttonWidth)
+                                   + " h=" + std::to_string(g_buttonHeight) + " -->";
+        if (firstLine == expected) {
+            g_xmlNum = g_numButtons; g_xmlWidth = g_buttonWidth; g_xmlHeight = g_buttonHeight;
+            return true;
+        }
+    }
+
+    return GenerateXMLFile();
+}
+
+// -------------------------------------------------------------------------
+// Window class
+// -------------------------------------------------------------------------
+class CHButWnd : public CCustomWnd
+{
+public:
+    std::array<CButtonWnd*, MAX_BUTTONS + 1> MyButton = {};
+
+    CHButWnd() : CCustomWnd("MQMBButtonWnd")
+    {
+        for (int i = 1; i <= g_numButtons; i++)
+            MyButton[i] = (CButtonWnd*)GetChildItem(("MQMB_Button" + std::to_string(i)).c_str());
+    }
+
+    int WndNotification(CXWnd* pWnd, uint32_t uiMessage, void* pData) override
+    {
+        if (uiMessage == XWM_LCLICK) {
+            for (int i = 1; i <= g_numButtons; i++) {
+                if (pWnd == MyButton[i]) {
+                    if (g_buttons[i].command[0])
+                        ExecuteButtonCmd(pCharSpawn, g_buttons[i].command);
+                    return 0;
+                }
+            }
+        }
+        if (uiMessage == XWM_RCLICK) {
+            for (int i = 1; i <= g_numButtons; i++) {
+                if (pWnd == MyButton[i]) {
+                    g_editingButton = i;
+                    strcpy_s(g_editLabelBuf, g_buttons[i].label);
+                    StorageToDisplay(g_buttons[i].command, g_editCmdBuf, sizeof(g_editCmdBuf));
+                    g_editColor[0] = g_buttons[i].r / 255.0f;
+                    g_editColor[1] = g_buttons[i].g / 255.0f;
+                    g_editColor[2] = g_buttons[i].b / 255.0f;
+                    return 0;
+                }
+            }
+        }
+        return 0;
+    }
+
+    void SetLabel(int i)
+    {
+        if (CXWnd* lbl = GetChildItem(("MQMB_Label" + std::to_string(i)).c_str())) {
+            char buf[MAX_STRING];
+            strcpy_s(buf, g_buttons[i].label);
+            ParseMacroData(buf, MAX_STRING);
+            lbl->SetWindowText(buf);
+        }
+    }
+
+    void SetButtonInfo()
+    {
+        for (int i = 1; i <= g_numButtons; i++) {
+            SetLabel(i);
+            if (CXWnd* lbl = GetChildItem(("MQMB_Label" + std::to_string(i)).c_str())) {
+                ARGBCOLOR c{};
+                c.A = GetAlpha();
+                c.R = g_buttons[i].r;
+                c.G = g_buttons[i].g;
+                c.B = g_buttons[i].b;
+                lbl->SetCRNormal(c.ARGB);
+            }
+            if (MyButton[i])
+                MyButton[i]->SetTooltip(g_buttons[i].command);
+        }
+    }
+};
+
+// -------------------------------------------------------------------------
+// Window persistence
+// -------------------------------------------------------------------------
+static void ReadWindowINI(CSidlScreenWnd* w)
+{
+    w->SetLocation({ GetPrivateProfileInt("Location", "Left",   487, INIFileName),
+                     GetPrivateProfileInt("Location", "Top",     85, INIFileName),
+                     GetPrivateProfileInt("Location", "Right",  964, INIFileName),
+                     GetPrivateProfileInt("Location", "Bottom", 138, INIFileName) });
+    w->SetLocked(GetPrivateProfileBool("UISettings",    "Locked",      false, INIFileName));
+    w->SetFades(GetPrivateProfileBool("UISettings",     "Fades",       false, INIFileName));
+    w->SetFadeDelay(GetPrivateProfileInt("UISettings",  "Delay",       2000,  INIFileName));
+    w->SetFadeDuration(GetPrivateProfileInt("UISettings","Duration",   500,   INIFileName));
+    w->SetAlpha(GetPrivateProfileInt("UISettings",      "Alpha",       255,   INIFileName));
+    w->SetFadeToAlpha(GetPrivateProfileInt("UISettings","FadeToAlpha", 255,   INIFileName));
+    w->SetBGType(GetPrivateProfileInt("UISettings",     "BGType",      1,     INIFileName));
+    ARGBCOLOR argb{};
+    argb.A = GetPrivateProfileInt("UISettings", "BGTint.alpha", 255, INIFileName);
+    argb.R = GetPrivateProfileInt("UISettings", "BGTint.red",   255, INIFileName);
+    argb.G = GetPrivateProfileInt("UISettings", "BGTint.green", 255, INIFileName);
+    argb.B = GetPrivateProfileInt("UISettings", "BGTint.blue",  255, INIFileName);
+    w->SetBGColor(argb.ARGB);
+    w->SetWindowText(&GetPrivateProfileString("UISettings", "WindowTitle", "MQ2 MyButton Window", INIFileName)[0]);
+    w->Show(GetPrivateProfileBool("UISettings", "ShowWindow", true, INIFileName));
+    w->UpdateLayout();
+    if (w->bFullyScreenClipped)
+        WriteChatf("MQ2MyButtons: window is off screen.");
+}
+
+static void WriteWindowINI(CSidlScreenWnd* w)
+{
+    WritePrivateProfileString("UISettings", "WindowTitle",  w->GetWindowText().c_str(),          INIFileName);
+    WritePrivateProfileBool(  "UISettings", "Locked",       w->IsLocked(),                       INIFileName);
+    WritePrivateProfileBool(  "UISettings", "Fades",        w->GetFades(),                       INIFileName);
+    WritePrivateProfileInt(   "UISettings", "Delay",        w->GetFadeDelay(),                   INIFileName);
+    WritePrivateProfileInt(   "UISettings", "Duration",     w->GetFadeDuration(),                INIFileName);
+    WritePrivateProfileInt(   "UISettings", "Alpha",        w->GetAlpha(),                       INIFileName);
+    WritePrivateProfileInt(   "UISettings", "FadeToAlpha",  w->GetFadeToAlpha(),                 INIFileName);
+    WritePrivateProfileInt(   "UISettings", "BGType",       w->GetBGType(),                      INIFileName);
+    ARGBCOLOR argb{};
+    argb.ARGB = w->GetBGColor();
+    WritePrivateProfileInt("UISettings", "BGTint.alpha", argb.A, INIFileName);
+    WritePrivateProfileInt("UISettings", "BGTint.red",   argb.R, INIFileName);
+    WritePrivateProfileInt("UISettings", "BGTint.green", argb.G, INIFileName);
+    WritePrivateProfileInt("UISettings", "BGTint.blue",  argb.B, INIFileName);
+    WritePrivateProfileBool("UISettings", "ShowWindow",   w->IsVisible(),                        INIFileName);
+    WritePrivateProfileInt("Location", "Top",    w->GetLocation().top,    INIFileName);
+    WritePrivateProfileInt("Location", "Bottom", w->GetLocation().bottom, INIFileName);
+    WritePrivateProfileInt("Location", "Left",   w->GetLocation().left,   INIFileName);
+    WritePrivateProfileInt("Location", "Right",  w->GetLocation().right,  INIFileName);
+}
+
+static void DestroyButtonWindow()
+{
+    if (MyBtnWnd) {
+        WriteWindowINI(MyBtnWnd);
+        delete MyBtnWnd;
+        MyBtnWnd = nullptr;
+    }
+}
+
+// -------------------------------------------------------------------------
+// UI regeneration - called when settings change count or size
+// -------------------------------------------------------------------------
+static void RegenerateUI()
+{
+    DestroyButtonWindow();
+    RemoveXMLFile(XML_FILE);
+    if (GenerateXMLFile())
+        AddXMLFile(XML_FILE);
+    else
+        MBError("Failed to regenerate " + std::string(XML_FILE));
+}
+
+// -------------------------------------------------------------------------
+// ImGui settings panel (MQ menu -> plugins/MyButtons)
+// -------------------------------------------------------------------------
+static void MyButtonsSettingsPanel()
+{
+    const bool dirty = (g_numButtons != g_xmlNum || g_buttonWidth != g_xmlWidth || g_buttonHeight != g_xmlHeight);
+
+    ImGui::SetNextItemWidth(200);
+    ImGui::SliderInt("Button Count", &g_numButtons, 10, MAX_BUTTONS);
+    ImGui::SameLine();
+    mq::imgui::HelpMarker("Number of buttons (1-60). Requires 'Generate XML' to apply.\n\nINISetting: [Settings] MaxButtons");
+
+    ImGui::SetNextItemWidth(200);
+    ImGui::SliderInt("Button Width (px)", &g_buttonWidth, 16, 80);
+    ImGui::SameLine();
+    mq::imgui::HelpMarker("Button display width in pixels (16-80). Requires 'Generate XML' to apply.\n\nINISetting: [Settings] ButtonWidth");
+
+    ImGui::SetNextItemWidth(200);
+    ImGui::SliderInt("Button Height (px)", &g_buttonHeight, 16, 40);
+    ImGui::SameLine();
+    mq::imgui::HelpMarker("Button display height in pixels (16-40). Requires 'Generate XML' to apply.\n\nINISetting: [Settings] ButtonHeight");
+
+    ImGui::Separator();
+
+    if (dirty)
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.3f, 0.0f, 1.0f));
+    if (ImGui::Button("Generate XML")) {
+        WritePrivateProfileInt("Settings", "MaxButtons",   g_numButtons,   INIFileName);
+        WritePrivateProfileInt("Settings", "ButtonWidth",  g_buttonWidth,  INIFileName);
+        WritePrivateProfileInt("Settings", "ButtonHeight", g_buttonHeight, INIFileName);
+        RegenerateUI();
+        MBLog("XML regenerated: " + std::to_string(g_numButtons) + " buttons at "
+              + std::to_string(g_buttonWidth) + "x" + std::to_string(g_buttonHeight) + "px.");
+    }
+    if (dirty)
+        ImGui::PopStyleColor();
+    ImGui::SameLine();
+    mq::imgui::HelpMarker("Regenerates the UI XML with current settings and saves them to INI.\nRequired after changing button count or dimensions.");
+
+    if (dirty) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.6f, 0.0f, 1.0f));
+        ImGui::TextWrapped("WARNING: Button count or dimensions have changed. Current button labels and commands "
+                           "will not match the active window until 'Generate XML' is clicked.");
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::Separator();
+
+    if (ImGui::Button("Reload Buttons from INI")) {
+        LoadButtonData();
+        if (MyBtnWnd) MyBtnWnd->SetButtonInfo();
+        MBLog("Buttons reloaded from INI.");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Show Button List")) {
+        for (int i = 1; i <= g_numButtons; i++) {
+            if (g_buttons[i].command[0])
+                MBLog("[" + std::to_string(i) + "] " + g_buttons[i].label + " -> " + g_buttons[i].command);
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Broadcast");
+    ImGui::SameLine();
+    mq::imgui::HelpMarker(
+        "When enabled, saving a button edit sends a reload command to all other clients in the zone.\n"
+        "Requires DanNet or EQBC to be loaded on all clients.\n\n"
+        "Multi-line commands: use Enter in the button editor. Lines beginning with # are comments.");
+    if (ImGui::Checkbox("Broadcast button changes to other clients", &g_broadcastEnabled))
+        WritePrivateProfileBool("Settings", "BroadcastEnabled", g_broadcastEnabled, INIFileName);
+    if (g_broadcastEnabled) {
+        ImGui::Indent();
+        bool changed = ImGui::RadioButton("DanNet (/dgze)", &g_broadcastMethod, 0);
+        ImGui::SameLine();
+        changed |= ImGui::RadioButton("EQBC (/bca)", &g_broadcastMethod, 1);
+        if (changed)
+            WritePrivateProfileInt("Settings", "BroadcastMethod", g_broadcastMethod, INIFileName);
+        ImGui::Unindent();
+    }
+}
+
+// -------------------------------------------------------------------------
+// Command handler
+// -------------------------------------------------------------------------
+PLUGIN_API void MyButtonsCommand(SPAWNINFO* pSpawn, char* szLine)
+{
+    char szParam[MAX_STRING] = {};
+    GetArg(szParam, szLine, 1);
+
+    if (szParam[0] == '\0') {
+        if (MyBtnWnd) MyBtnWnd->Show(!MyBtnWnd->IsVisible());
+        return;
+    }
+    if (ci_equals(szParam, "help") || !strcmp(szParam, "?")) {
+        MBLog("========== MyButtons Help ===========");
+        MBLog("Edit MQ2MyButtons.ini to configure buttons. Right-click any button to edit in-game.");
+        MBLog("TLOs: \at${MyButtons.label[N]}\ao, \at${MyButtons.cmd[N]}");
+        MBLog("Commands: on | off | reload | show | <ButtonNumber>");
+        MBLog("Settings panel available in MQ menu -> plugins/MyButtons");
+        MBLog("--- Token syntax in commands ---");
+        MBLog("\at^{expr}\ao  expands MQ data \aylocally\ao before the command is sent.");
+        MBLog("\at${expr}\ao  passed through intact (parsed by receiver, e.g. via /noparse /bcaa).");
+        MBLog("Example: \at/noparse /bcaa //if ( ${Raid.MA[1]} == ^{Me.Name} ) /nav id ^{Me.ID}");
+        return;
+    }
+    if (ci_equals(szParam, "on"))                                { if (MyBtnWnd) MyBtnWnd->Show(true);  return; }
+    if (ci_equals(szParam, "off") || ci_equals(szParam, "hide")) { if (MyBtnWnd) MyBtnWnd->Show(false); return; }
+    if (ci_equals(szParam, "reload")) {
+        LoadButtonData();
+        if (MyBtnWnd) MyBtnWnd->SetButtonInfo();
+        MBLog("Reloaded from INI.");
+        return;
+    }
+    if (ci_equals(szParam, "show")) {
+        for (int i = 1; i <= g_numButtons; i++) {
+            if (g_buttons[i].command[0])
+                MBLog("[" + std::to_string(i) + "] " + g_buttons[i].label + " -> " + g_buttons[i].command);
+        }
+        return;
+    }
+
+    const int i = GetIntFromString(szParam, 0);
+    if (i >= 1 && i <= g_numButtons) {
+        if (g_buttons[i].command[0])
+            DoCommand(pSpawn, g_buttons[i].command);
+        else
+            MBError("No command set for button " + std::to_string(i));
+    } else {
+        MBError("Invalid: " + std::string(szParam));
+    }
+}
+
+// -------------------------------------------------------------------------
+// TLO
+// -------------------------------------------------------------------------
+bool MQ2MyBtnData(const char* szIndex, MQTypeVar& Dest);
+
 class MQ2MyButtonsType : public MQ2Type
 {
 public:
-	enum Members {
-		Label,
-		CMD
-	};
+    enum Members { Label, CMD };
 
-	MQ2MyButtonsType() : MQ2Type("MyButtons") {
-		TypeMember(Label);
-		AddMember(Label, "label");
+    MQ2MyButtonsType() : MQ2Type("MyButtons")
+    {
+        TypeMember(Label);
+        AddMember(Label, "label");
+        TypeMember(CMD);
+        AddMember(CMD, "cmd");
+        AddMember(CMD, "Cmd");
+    }
 
-		TypeMember(CMD);
-		AddMember(CMD, "cmd");
-		AddMember(CMD, "Cmd");
-	}
+    bool GetMember(MQVarPtr VarPtr, const char* Member, char* Index, MQTypeVar& Dest) override
+    {
+        const auto* pMember = MQ2MyButtonsType::FindMember(Member);
+        if (!pMember) return false;
 
-	virtual bool GetMember(MQVarPtr VarPtr, const char* Member, char* Index, MQTypeVar& Dest) override {
-		auto pMember = MQ2MyButtonsType::FindMember(Member);
-		if (!pMember) return false;
-
-		// Validate the argument is between 1 and iMaxNumber
-		int i = GetIntFromString(Index , 0);
-		if (i > 0 && i <= KnightlyMyButtons::iMaxButtons) {
-			switch ((Members)pMember->ID) {
-				case Label:
-					strcpy_s(DataTypeTemp, KnightlyMyButtons::arrMyLabels[i]);
-					break;
-				case CMD:
-					strcpy_s(DataTypeTemp, KnightlyMyButtons::arrMyCommands[i]);
-					break;
-				default:
-					return false;
-			}
-		}
-		else {
-			strcpy_s(DataTypeTemp, "InvalidButton");
-		}
-
-		Dest.Type = mq::datatypes::pStringType;
-		Dest.Ptr = &DataTypeTemp[0];
-		return true;
-	}
+        const int i = GetIntFromString(Index, 0);
+        if (i < 1 || i > g_numButtons) {
+            strcpy_s(DataTypeTemp, "InvalidButton");
+        } else {
+            switch ((Members)pMember->ID) {
+                case Label: strcpy_s(DataTypeTemp, g_buttons[i].label);   break;
+                case CMD:   strcpy_s(DataTypeTemp, g_buttons[i].command); break;
+                default:    return false;
+            }
+        }
+        Dest.Type = mq::datatypes::pStringType;
+        Dest.Ptr  = &DataTypeTemp[0];
+        return true;
+    }
 };
-
-void ReadWindowINI(CSidlScreenWnd* pWindow)
-{
-	pWindow->SetLocation({ GetPrivateProfileInt("Location", "Left", 18, INIFileName),
-	                       GetPrivateProfileInt("Location", "Top", 666, INIFileName),
-	                       GetPrivateProfileInt("Location", "Right", 531, INIFileName),
-	                       GetPrivateProfileInt("Location", "Bottom", 718, INIFileName) });
-	pWindow->SetLocked(GetPrivateProfileBool("UISettings", "Locked", false, INIFileName));
-	pWindow->SetFades(GetPrivateProfileBool("UISettings", "Fades", false, INIFileName));
-	pWindow->SetFadeDelay(GetPrivateProfileInt("UISettings", "Delay", 2000, INIFileName));
-	pWindow->SetFadeDuration(GetPrivateProfileInt("UISettings", "Duration", 500, INIFileName));
-	pWindow->SetAlpha(GetPrivateProfileInt("UISettings", "Alpha", 255, INIFileName));
-	pWindow->SetFadeToAlpha(GetPrivateProfileInt("UISettings", "FadeToAlpha", 255, INIFileName));
-	pWindow->SetBGType(GetPrivateProfileInt("UISettings", "BGType", 1,INIFileName));
-	ARGBCOLOR argb{};
-	argb.A = GetPrivateProfileInt("UISettings","BGTint.alpha",      255,INIFileName);
-	argb.R = GetPrivateProfileInt("UISettings","BGTint.red",      255,INIFileName);
-	argb.G = GetPrivateProfileInt("UISettings","BGTint.green",      255,INIFileName);
-	argb.B = GetPrivateProfileInt("UISettings","BGTint.blue",      255,INIFileName);
-	pWindow->SetBGColor(argb.ARGB);
-	pWindow->SetWindowText(&GetPrivateProfileString("UISettings","WindowTitle","MQ2 MyButton Window", INIFileName)[0]);
-	pWindow->Show(GetPrivateProfileBool("UISettings", "ShowWindow", true, INIFileName));
-	pWindow->UpdateLayout();
-	if (pWindow->bFullyScreenClipped)
-	{
-		WriteChatf("Mybuttons is off screen.");
-	}
-
-}
-
-void WriteWindowINI(CSidlScreenWnd* pWindow)
-{
-   WritePrivateProfileString("UISettings", "WindowTitle", pWindow->GetWindowText().c_str(), INIFileName);
-   WritePrivateProfileString("UISettings", "Locked", std::to_string(pWindow->IsLocked()), INIFileName);
-   WritePrivateProfileString("UISettings", "Fades", std::to_string(pWindow->GetFades()), INIFileName);
-   WritePrivateProfileString("UISettings", "Delay", std::to_string(pWindow->GetFadeDelay()), INIFileName);
-   WritePrivateProfileString("UISettings", "Duration", std::to_string(pWindow->GetFadeDuration()), INIFileName);
-   WritePrivateProfileString("UISettings", "Alpha", std::to_string(pWindow->GetAlpha()), INIFileName);
-   WritePrivateProfileString("UISettings", "FadeToAlpha", std::to_string(pWindow->GetFadeToAlpha()), INIFileName);
-   WritePrivateProfileString("UISettings", "BGType", std::to_string(pWindow->GetBGType()), INIFileName);
-   ARGBCOLOR argb{};
-   argb.ARGB = pWindow->GetBGColor();
-   WritePrivateProfileString("UISettings","BGTint.alpha", std::to_string(argb.A), INIFileName);
-   WritePrivateProfileString("UISettings","BGTint.red", std::to_string(argb.R), INIFileName);
-   WritePrivateProfileString("UISettings","BGTint.green", std::to_string(argb.G), INIFileName);
-   WritePrivateProfileString("UISettings","BGTint.blue", std::to_string(argb.B), INIFileName);
-
-   WritePrivateProfileString("UISettings","ShowWindow",   std::to_string(pWindow->IsVisible()), INIFileName);
-
-   WritePrivateProfileString("Location", "Top", std::to_string(pWindow->GetLocation().top), INIFileName);
-   WritePrivateProfileString("Location", "Bottom", std::to_string(pWindow->GetLocation().bottom), INIFileName);
-   WritePrivateProfileString("Location", "Left", std::to_string(pWindow->GetLocation().left), INIFileName);
-   WritePrivateProfileString("Location", "Right", std::to_string(pWindow->GetLocation().right), INIFileName);
-
-   WritePrivateProfileString("Button1", "Label", KnightlyMyButtons::arrMyLabels[1], INIFileName);
-   WritePrivateProfileString("Button1", "Command", KnightlyMyButtons::arrMyCommands[1], INIFileName);
-   WritePrivateProfileString("Button1", "Red", KnightlyMyButtons::arrMyColors[1][0], INIFileName);
-   WritePrivateProfileString("Button1", "Green", KnightlyMyButtons::arrMyColors[1][1], INIFileName);
-   WritePrivateProfileString("Button1", "Blue", KnightlyMyButtons::arrMyColors[1][2], INIFileName);
-}
-
-void DestroyButtonWindow()
-{
-   DebugSpewAlways("MQ2MyButtons::DestroyButtonWindow()");
-   if (MyBtnWnd)
-   {
-	  WriteWindowINI(MyBtnWnd);
-	  delete MyBtnWnd;
-	  MyBtnWnd = nullptr;
-   }
-}
 
 bool MQ2MyBtnData(const char* szIndex, MQTypeVar& Dest)
 {
-	Dest.DWord = 1;
-	Dest.Type = pMyButtonsType;
-	return true;
+    Dest.DWord = 1;
+    Dest.Type  = pMyButtonsType;
+    return true;
 }
 
+// -------------------------------------------------------------------------
+// In-game button editor (ImGui overlay, opened by right-clicking a button)
+// -------------------------------------------------------------------------
+PLUGIN_API void OnUpdateImGui()
+{
+    if (g_editingButton <= 0) return;
+
+    ImGui::SetNextWindowSize(ImVec2(500, 380), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(400, 200), ImGuiCond_FirstUseEver);
+    bool open = true;
+    const std::string title = "Edit Button " + std::to_string(g_editingButton) + "##MBEdit";
+    if (ImGui::Begin(title.c_str(), &open, ImGuiWindowFlags_NoCollapse)) {
+        ImGui::Text("Label");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##label", g_editLabelBuf, sizeof(g_editLabelBuf));
+
+        ImGui::Text("Command");
+        ImGui::SameLine();
+        mq::imgui::HelpMarker(
+            "One command per line. Lines starting with # are comments.\n\n"
+            "Token syntax:\n"
+            "  ^{expr}  expands MQ data on THIS client before sending\n"
+            "  ${expr}  passed through intact (each receiver parses their own)\n\n"
+            "Example multi-line:\n"
+            "  # pause macro on all toons\n"
+            "  /noparse /bcaa //docommand /${Me.Class.ShortName} pause 1\n"
+            "  # navigate all zone-mates to me\n"
+            "  /dgex /nav id ^{Me.ID}");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputTextMultiline("##cmd", g_editCmdBuf, sizeof(g_editCmdBuf),
+                                  ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 8));
+
+        ImGui::ColorEdit3("Color", g_editColor);
+
+        // Reorder controls
+        static int s_swapTarget  = 0;
+        static int s_lastEditBtn = 0;
+        if (g_editingButton != s_lastEditBtn) { s_swapTarget = 0; s_lastEditBtn = g_editingButton; }
+        const int cur = g_editingButton;
+
+        const auto writeBtn = [&](int i) {
+            const std::string sec = "Button" + std::to_string(i);
+            WritePrivateProfileString(sec.c_str(), "Label",   g_buttons[i].label,   INIFileName);
+            WritePrivateProfileString(sec.c_str(), "Command", g_buttons[i].command, INIFileName);
+            WritePrivateProfileInt(   sec.c_str(), "Red",     g_buttons[i].r,       INIFileName);
+            WritePrivateProfileInt(   sec.c_str(), "Green",   g_buttons[i].g,       INIFileName);
+            WritePrivateProfileInt(   sec.c_str(), "Blue",    g_buttons[i].b,       INIFileName);
+        };
+        const auto doSwap = [&](int a, int b) {
+            std::swap(g_buttons[a], g_buttons[b]);
+            writeBtn(a); writeBtn(b);
+            if (MyBtnWnd) MyBtnWnd->SetButtonInfo();
+            if (g_broadcastEnabled) {
+                char bcCmd[MAX_STRING];
+                if (g_broadcastMethod == 0) sprintf_s(bcCmd, "/dgex /mybuttons reload");
+                else                        sprintf_s(bcCmd, "/bca //mybuttons reload");
+                DoCommand(pCharSpawn, bcCmd);
+            }
+            g_editingButton = 0;
+        };
+
+        ImGui::Spacing();
+        ImGui::BeginDisabled(cur <= 1);
+        if (ImGui::ArrowButton("##moveup", ImGuiDir_Up))     doSwap(cur, cur - 1);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(cur >= g_numButtons);
+        if (ImGui::ArrowButton("##movedown", ImGuiDir_Down)) doSwap(cur, cur + 1);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextDisabled("move");
+        ImGui::SameLine();
+
+        char swapPreview[MAX_STRING];
+        if (s_swapTarget < 1 || s_swapTarget > g_numButtons || s_swapTarget == cur)
+            strcpy_s(swapPreview, "-- swap with --");
+        else
+            sprintf_s(swapPreview, "[%d] %s", s_swapTarget,
+                      g_buttons[s_swapTarget].label[0] ? g_buttons[s_swapTarget].label : "(empty)");
+
+        ImGui::SetNextItemWidth(200);
+        if (ImGui::BeginCombo("##swaptgt", swapPreview)) {
+            for (int j = 1; j <= g_numButtons; j++) {
+                if (j == cur) continue;
+                char item[MAX_STRING];
+                sprintf_s(item, "[%d] %s", j, g_buttons[j].label[0] ? g_buttons[j].label : "(empty)");
+                if (ImGui::Selectable(item, s_swapTarget == j)) s_swapTarget = j;
+                if (s_swapTarget == j) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(s_swapTarget < 1 || s_swapTarget > g_numButtons || s_swapTarget == cur);
+        if (ImGui::Button("Swap##swapbtn")) doSwap(cur, s_swapTarget);
+        ImGui::EndDisabled();
+
+        ImGui::Separator();
+        if (ImGui::Button("Save", ImVec2(80, 0))) {
+            const int n = g_editingButton;
+            const std::string sec = "Button" + std::to_string(n);
+            char storageBuf[MAX_STRING];
+            DisplayToStorage(g_editCmdBuf, storageBuf, sizeof(storageBuf));
+            strcpy_s(g_buttons[n].label,   g_editLabelBuf);
+            strcpy_s(g_buttons[n].command, storageBuf);
+            g_buttons[n].r = static_cast<int>(g_editColor[0] * 255.0f);
+            g_buttons[n].g = static_cast<int>(g_editColor[1] * 255.0f);
+            g_buttons[n].b = static_cast<int>(g_editColor[2] * 255.0f);
+            WritePrivateProfileString(sec.c_str(), "Label",   g_buttons[n].label,   INIFileName);
+            WritePrivateProfileString(sec.c_str(), "Command", g_buttons[n].command, INIFileName);
+            WritePrivateProfileInt(   sec.c_str(), "Red",     g_buttons[n].r,       INIFileName);
+            WritePrivateProfileInt(   sec.c_str(), "Green",   g_buttons[n].g,       INIFileName);
+            WritePrivateProfileInt(   sec.c_str(), "Blue",    g_buttons[n].b,       INIFileName);
+            if (MyBtnWnd) MyBtnWnd->SetButtonInfo();
+            if (g_broadcastEnabled) {
+                char bcCmd[MAX_STRING];
+                if (g_broadcastMethod == 0)
+                    sprintf_s(bcCmd, "/dgex /mybuttons reload");
+                else
+                    sprintf_s(bcCmd, "/bca //mybuttons reload");
+                DoCommand(pCharSpawn, bcCmd);
+            }
+            g_editingButton = 0;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear", ImVec2(80, 0))) {
+            g_editLabelBuf[0] = '\0';
+            g_editCmdBuf[0]   = '\0';
+            g_editColor[0] = 1.0f; g_editColor[1] = 1.0f; g_editColor[2] = 1.0f;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+            g_editingButton = 0;
+        }
+    }
+    if (!open) g_editingButton = 0;
+    ImGui::End();
+}
+
+// -------------------------------------------------------------------------
+// Plugin lifecycle
+// -------------------------------------------------------------------------
 PLUGIN_API void OnCleanUI()
 {
-	if (MyBtnWnd) {
-		DestroyButtonWindow();
-	}
+    DestroyButtonWindow();
 }
 
 PLUGIN_API void OnPulse()
 {
-	if (GetGameState() == GAMESTATE_INGAME) {
-		if (MyBtnWnd == nullptr) {
-			if (pSidlMgr->FindScreenPieceTemplate("MQMBButtonWnd")) {
-				MyBtnWnd = new CHButWnd();
-				if (MyBtnWnd != nullptr) {
-					ReadWindowINI(MyBtnWnd);
-					MyBtnWnd->SetButtonInfo();
-					WriteWindowINI(MyBtnWnd);
-				}
-			}
-		}
-		else {
-			// Set the labels every 30 seconds (it's a button, not a display window)
-			const int SkipMS = 30 * 1000;
-			static auto pulseTimer = GetTickCount64() + SkipMS;
-			if (GetTickCount64() > pulseTimer) {
-				for (int i = 1; i <= KnightlyMyButtons::iMaxButtons; ++i) {
-					MyBtnWnd->SetLabel(i);
-				}
-				pulseTimer = GetTickCount64() + SkipMS;
-			}
-		}
-	}
-}
+    if (GetGameState() != GAMESTATE_INGAME) return;
 
+    if (!MyBtnWnd) {
+        if (pSidlMgr->FindScreenPieceTemplate("MQMBButtonWnd")) {
+            MyBtnWnd = new CHButWnd();
+            ReadWindowINI(MyBtnWnd);
+            MyBtnWnd->SetButtonInfo();
+            WriteWindowINI(MyBtnWnd);
+        }
+    } else {
+        static uint64_t nextLabelUpdate = 0;
+        const uint64_t  now             = GetTickCount64();
+        if (now >= nextLabelUpdate) {
+            for (int i = 1; i <= g_numButtons; i++)
+                MyBtnWnd->SetLabel(i);
+            nextLabelUpdate = now + 30000;
+        }
+    }
+}
 
 PLUGIN_API void InitializePlugin()
 {
-   DebugSpewAlways("Initializing MQ2MyButtons");
-   if (KnightlyMyButtons::File::LoadButtonData()) {
-	   if (KnightlyMyButtons::File::CheckAndCreateXMLFile("MQUI_MyButtonsWnd.xml")) {
-			AddXMLFile("MQUI_MyButtonsWnd.xml");
-			AddCommand("/mybuttons", MyButtonsCommand);
-			pMyButtonsType = new MQ2MyButtonsType;
-			AddMQ2Data("MyButtons", MQ2MyBtnData);
-	   }
-	   else {
-		   KnightlyMyButtons::Log::Error("Could not open MQUI_MyButtonsWnd.xml. Plugin should be unloaded.");
-	   }
-   }
-   else {
-	   KnightlyMyButtons::Log::Error("Could not load INI. Plugin should be unloaded.");
-   }
+    DebugSpewAlways("Initializing MQ2MyButtons");
+    LoadButtonData();
+    if (EnsureXMLFile()) {
+        AddXMLFile(XML_FILE);
+        AddCommand("/mybuttons", MyButtonsCommand);
+        pMyButtonsType = new MQ2MyButtonsType;
+        AddMQ2Data("MyButtons", MQ2MyBtnData);
+        AddSettingsPanel("plugins/MyButtons", MyButtonsSettingsPanel);
+    } else {
+        MBError("Could not create " + std::string(XML_FILE) + ". Plugin disabled.");
+    }
 }
 
-// Called once, when the plugin is to shutdown
 PLUGIN_API void ShutdownPlugin()
 {
-	DebugSpewAlways("Shutting down MQ2MyButtons");
-	DestroyButtonWindow();
-	RemoveCommand("/mybuttons");
-	RemoveMQ2Data("MyButtons");
-	RemoveXMLFile("MQUI_MyButtonsWnd.xml");
-	delete pMyButtonsType;
+    DebugSpewAlways("Shutting down MQ2MyButtons");
+    DestroyButtonWindow();
+    RemoveCommand("/mybuttons");
+    RemoveMQ2Data("MyButtons");
+    RemoveXMLFile(XML_FILE);
+    RemoveSettingsPanel("plugins/MyButtons");
+    delete pMyButtonsType;
+    pMyButtonsType = nullptr;
 }
