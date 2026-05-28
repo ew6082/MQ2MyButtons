@@ -1,6 +1,18 @@
 // MQ2MyButtons.cpp
-// Original by unknown, updated by Knightly, condensed/extended by Nerp, vastly assisted by Claude
-//  
+// Original by unknown, updated by Knightly, condensed/extended by Nerp
+//
+// Architecture overview:
+//   - At plugin load, LoadButtonData() reads button definitions from INI.
+//   - EnsureXMLFile() writes (or reuses) an EQ UI XML file that defines the
+//     window, TileLayoutBox, and per-button Button+Label+LayoutBox elements.
+//   - AddXMLFile() hands the XML to EQ's SIDL system; EQ parses it async.
+//   - OnPulse() detects when EQ has parsed the XML (FindScreenPieceTemplate),
+//     then constructs CHButWnd which looks up all child button pointers once.
+//   - Button clicks dispatch through WndNotification; right-click opens the
+//     ImGui editor overlay (OnUpdateImGui).
+//   - Changing button count or dimensions requires regenerating the XML and
+//     reloading the window (RegenerateUI), because EQ bakes these into the
+//     element definitions at parse time.
 
 #include <mq/Plugin.h>
 #include <mq/imgui/ImGuiUtils.h>
@@ -12,7 +24,7 @@
 #include <string>
 
 PreSetup("MQ2MyButtons");
-PLUGIN_VERSION(2026.515);
+PLUGIN_VERSION(2024.0);
 
 PLUGIN_API void MyButtonsCommand(SPAWNINFO* pSpawn, char* szLine);
 
@@ -30,10 +42,18 @@ static int g_numButtons   = 30;
 static int g_buttonWidth  = 40;
 static int g_buttonHeight = 18;
 
-// settings the current XML on disk was built with (0 = unknown)
-static int g_xmlNum    = 0;
+// Tracks what parameters the existing XML file was generated with.
+// Compared against current settings to drive the "dirty" indicator in the
+// settings panel — if they diverge, the live window doesn't match the sliders.
+static int g_xmlNum    = 0; // 0 = no XML on disk / unknown
 static int g_xmlWidth  = 0;
 static int g_xmlHeight = 0;
+
+// Deferred layout refresh: after restoring window position from INI, EQ's
+// TileLayoutBox needs a second UpdateLayout() pass (on the next frame) to reflow
+// buttons to fill the restored window width. Without it the tile count stays at
+// the XML-default 10 columns until the user drags the window.
+static bool g_needsLayoutRefresh = false;
 
 // button editor state (0 = not editing)
 static int   g_editingButton            = 0;
@@ -43,9 +63,9 @@ static float g_editColor[3]             = { 1.0f, 1.0f, 1.0f };
 
 // broadcast settings
 static bool g_broadcastEnabled = false;
-static int  g_broadcastMethod  = 0; // 0 = DanNet (/dgze), 1 = EQBC (/bca)
+static int  g_broadcastMethod  = 0; // 0 = DanNet (/dgex), 1 = EQBC (/bca)
 
-static std::array<ButtonDef, MAX_BUTTONS + 1> g_buttons; // 1-indexed
+static std::array<ButtonDef, MAX_BUTTONS + 1> g_buttons; // 1-indexed; slot 0 unused
 
 class CHButWnd;
 static CHButWnd*        MyBtnWnd       = nullptr;
@@ -65,13 +85,15 @@ static void MBError(const std::string& msg)
 }
 
 // -------------------------------------------------------------------------
-// Pre-parse local tokens
+// Pre-parse local tokens:  Filling a hole in EQBC capability. Escape 
+//    chars (\) only work with /bct, not /bca, presumably for security reasons since 
+//    eqbc can be exposed to the internet on a live router port.
 //
 // ^{expression} is expanded on this client before the command is dispatched.
 // ${expression} is left intact so /noparse /bcaa can deliver it to receivers.
 //
 // Example: /noparse /bcaa //if ( ${Raid.MainAssist[1]} == ^{Me.Name} ) /nav id ^{Me.ID}
-// Becomes: /noparse /bcaa //if ( ${Raid.MainAssist[1]} == Tark ) /nav id 12345
+// Becomes: /noparse /bcaa //if ( ${Raid.MainAssist[1]} == Yournamehere ) /nav id 12345
 // Each receiver then parses ${Raid.MainAssist[1]} for their own character.
 // -------------------------------------------------------------------------
 static void PreParseLocalTokens(char* buf, size_t bufSize)
@@ -243,7 +265,7 @@ static bool GenerateXMLFile()
 
     const int w  = g_buttonWidth;
     const int h  = g_buttonHeight;
-    const int dW = w - 4;
+    const int dW = w - 4; // decal is inset 2px on each side from the button edge
     const int dH = h - 4;
 
     f << "<!-- MQ2MyButtons s=" << XML_SCHEMA << " n=" << g_numButtons << " w=" << w << " h=" << h << " -->\n"
@@ -316,6 +338,8 @@ static bool GenerateXMLFile()
       << "<Spacing>4</Spacing><SecondarySpacing>4</SecondarySpacing>"
       << "<HorizontalFirst>true</HorizontalFirst>"
       << "<AnchorToTop>true</AnchorToTop><AnchorToLeft>true</AnchorToLeft>"
+      // FirstPieceTemplate: EQ uses the first Piece as a layout hint for all children (tiled grid).
+      // SnapToChildren: TileLayoutBox auto-sizes its client area to fit its contents.
       << "<FirstPieceTemplate>true</FirstPieceTemplate><SnapToChildren>true</SnapToChildren>\n";
     for (int i = 1; i <= g_numButtons; i++)
         f << "<Pieces>LayoutBox:MQMB_LayoutB" << i << "</Pieces>\n";
@@ -329,7 +353,9 @@ static bool GenerateXMLFile()
       << "<Layout>MQMB_LayoutV</Layout>"
       << "<Font>2</Font><RelativePosition>false</RelativePosition>"
       << "<Location><X>0</X><Y>230</Y></Location>"
-      << "<Size><CX>" << (10 * (w + 4) - 4 + 41) << "</CX><CY>53</CY></Size>"
+      // Initial width sized for 10 columns; CY=53 fits one row of h=18 buttons.
+      // Both are just starting defaults — the window is user-resizable.
+      << "<Size><CX>" << (10 * (w + 4) - 4 + 41) << "</CX><CY>53</CY></Size>" // cols*(w+spacing)-spacing + TileBox offsets(15) + frame(22) + margin(4)
       << "<DrawTemplate>WDT_RoundedNoTitle</DrawTemplate>"
       << "<Style_Qmarkbox>true</Style_Qmarkbox>"
       << "<Style_Closebox>true</Style_Closebox>"
@@ -376,10 +402,14 @@ static bool EnsureXMLFile()
 class CHButWnd : public CCustomWnd
 {
 public:
+    // Cached pointers to each button's CButtonWnd, resolved once at construction.
+    // Avoids repeated GetChildItem string lookups on every click/notification.
     std::array<CButtonWnd*, MAX_BUTTONS + 1> MyButton = {};
 
     CHButWnd() : CCustomWnd("MQMBButtonWnd")
     {
+        // Loop only to g_numButtons — the XML only defines that many elements;
+        // GetChildItem would return null for any index beyond the generated count.
         for (int i = 1; i <= g_numButtons; i++)
             MyButton[i] = (CButtonWnd*)GetChildItem(("MQMB_Button" + std::to_string(i)).c_str());
     }
@@ -411,6 +441,8 @@ public:
         return 0;
     }
 
+    // SetLabel re-evaluates any ${...} expressions in the label at call time,
+    // so labels like "${Me.Name}" reflect live values. Called periodically from OnPulse.
     void SetLabel(int i)
     {
         if (CXWnd* lbl = GetChildItem(("MQMB_Label" + std::to_string(i)).c_str())) {
@@ -421,6 +453,8 @@ public:
         }
     }
 
+    // SetButtonInfo applies label text, label color, and button tooltip for all slots.
+    // Called on window creation and after any data reload or edit save.
     void SetButtonInfo()
     {
         for (int i = 1; i <= g_numButtons; i++) {
@@ -463,8 +497,11 @@ static void ReadWindowINI(CSidlScreenWnd* w)
     w->SetBGColor(argb.ARGB);
     w->SetWindowText(&GetPrivateProfileString("UISettings", "WindowTitle", "MQ2 MyButton Window", INIFileName)[0]);
     w->Show(GetPrivateProfileBool("UISettings", "ShowWindow", true, INIFileName));
-    w->UpdateLayout();
-    if (w->bFullyScreenClipped)
+    w->UpdateLayout(); // required after SetLocation to re-layout TileLayoutBox children
+    // Note: the TileLayoutBox will still show the XML-default 10-column layout here because
+    // the tile-count reflow only fires on a hidden→visible transition. The deferred
+    // Show(false)→Show(true) in OnPulse (g_needsLayoutRefresh) is what actually fixes it.
+    if (w->bFullyScreenClipped) // can happen if window position was saved off-screen in a prior session
         WriteChatf("MQ2MyButtons: window is off screen.");
 }
 
@@ -502,6 +539,11 @@ static void DestroyButtonWindow()
 
 // -------------------------------------------------------------------------
 // UI regeneration - called when settings change count or size
+//
+// Order matters: destroy the window first (it holds pointers into EQ's SIDL
+// element tree), then unregister the XML, then write and re-register it.
+// EQ will parse the new XML and populate its SIDL registry; OnPulse detects
+// completion via FindScreenPieceTemplate and recreates the window.
 // -------------------------------------------------------------------------
 static void RegenerateUI()
 {
@@ -585,7 +627,7 @@ static void MyButtonsSettingsPanel()
         WritePrivateProfileBool("Settings", "BroadcastEnabled", g_broadcastEnabled, INIFileName);
     if (g_broadcastEnabled) {
         ImGui::Indent();
-        bool changed = ImGui::RadioButton("DanNet (/dgze)", &g_broadcastMethod, 0);
+        bool changed = ImGui::RadioButton("DanNet (/dgex)", &g_broadcastMethod, 0);
         ImGui::SameLine();
         changed |= ImGui::RadioButton("EQBC (/bca)", &g_broadcastMethod, 1);
         if (changed)
@@ -646,7 +688,7 @@ PLUGIN_API void MyButtonsCommand(SPAWNINFO* pSpawn, char* szLine)
 }
 
 // -------------------------------------------------------------------------
-// TLO
+// TLO — exposes ${MyButtons.label[N]} and ${MyButtons.cmd[N]} to macros.
 // -------------------------------------------------------------------------
 bool MQ2MyBtnData(const char* szIndex, MQTypeVar& Dest);
 
@@ -687,7 +729,7 @@ public:
 
 bool MQ2MyBtnData(const char* szIndex, MQTypeVar& Dest)
 {
-    Dest.DWord = 1;
+    Dest.DWord = 1; // required by MQ2 TLO convention; actual data is on the type, not here
     Dest.Type  = pMyButtonsType;
     return true;
 }
@@ -843,19 +885,37 @@ PLUGIN_API void OnPulse()
     if (GetGameState() != GAMESTATE_INGAME) return;
 
     if (!MyBtnWnd) {
+        // AddXMLFile is asynchronous — EQ parses the XML over several frames.
+        // FindScreenPieceTemplate returning non-null means the SIDL registry is ready
+        // and CHButWnd can safely look up its child button pointers.
         if (pSidlMgr->FindScreenPieceTemplate("MQMBButtonWnd")) {
             MyBtnWnd = new CHButWnd();
             ReadWindowINI(MyBtnWnd);
             MyBtnWnd->SetButtonInfo();
-            WriteWindowINI(MyBtnWnd);
+            WriteWindowINI(MyBtnWnd); // writes INI defaults on first run if keys were missing
+            g_needsLayoutRefresh = true; // schedule a second layout pass next frame (see comment on g_needsLayoutRefresh)
         }
     } else {
+        // Second-pass layout: TileLayoutBox needs one extra UpdateLayout() after the
+        // window size has been restored to reflow buttons to the correct column count.
+        if (g_needsLayoutRefresh) {
+            // The TileLayoutBox only reruns its tile-count calculation when the window
+            // transitions from hidden→visible. A plain UpdateLayout() on the parent is
+            // not sufficient. Show(false)→Show(true) fires the visibility-change
+            // notification that causes it to reflow against the restored window width.
+            MyBtnWnd->Show(false);
+            MyBtnWnd->Show(true);
+            g_needsLayoutRefresh = false;
+        }
+
         static uint64_t nextLabelUpdate = 0;
         const uint64_t  now             = GetTickCount64();
         if (now >= nextLabelUpdate) {
+            // Re-evaluate labels every 15 s so ${...} expressions stay current
+            // without hammering ParseMacroData on every frame.
             for (int i = 1; i <= g_numButtons; i++)
                 MyBtnWnd->SetLabel(i);
-            nextLabelUpdate = now + 30000;
+            nextLabelUpdate = now + 15000;
         }
     }
 }
