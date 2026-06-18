@@ -27,6 +27,7 @@
 PreSetup("MQ2MyButtons2");
 PLUGIN_VERSION(2026.0617);
 
+
 PLUGIN_API void MyButtons2Command(SPAWNINFO* pSpawn, char* szLine);
 
 constexpr int MAX_BUTTONS  = 60;
