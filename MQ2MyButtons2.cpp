@@ -14,6 +14,7 @@
 //   - Changing button count or dimensions requires regenerating the XML and
 //     reloading the window (RegenerateUI2), because EQ bakes these into the
 //     element definitions at parse time.
+//
 
 #include <mq/Plugin.h>
 #include <mq/imgui/ImGuiUtils.h>
