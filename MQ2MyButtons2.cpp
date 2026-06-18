@@ -25,7 +25,7 @@
 #include <string>
 
 PreSetup("MQ2MyButtons2");
-PLUGIN_VERSION(2026.0515);
+PLUGIN_VERSION(2026.0526);
 
 PLUGIN_API void MyButtons2Command(SPAWNINFO* pSpawn, char* szLine);
 
